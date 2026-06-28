@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Ok, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -18,5 +18,38 @@ pub trait Tool: Send + Sync {
             "description": self.description(),
             "parameters": self.parameters_schema(),}
         })
+    }
+}
+
+#[async_trait]
+impl Tool for ReadFile {
+    fn name(&self) -> &str {
+        "read_file"
+    }
+
+    fn description(&self) -> &str {
+        "Read the full contents of a file at the given path"
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type":"object",
+            "properties":{
+                "path": {
+                    "type":"string",
+                    "description": "Path to the file to read"
+                },
+                "required":["path"]
+            }
+        })
+    }
+
+    async fn execute(&self, args: Value)-> Result<Value>{
+        let path = args["path"].as_str().ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
+
+        let content = tokio::fs::read_to_string(path).await?;
+
+        Ok(serde_json::json!({"content": content}))
+
     }
 }
