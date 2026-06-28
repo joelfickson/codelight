@@ -1,4 +1,4 @@
-use vc_gateway::GatewayClient;
+use vc_gateway::models::gateway::GatewayClient;
 use vc_types::{Message, Role};
 
 #[tokio::main]
