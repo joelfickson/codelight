@@ -1,4 +1,4 @@
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -21,6 +21,8 @@ pub trait Tool: Send + Sync {
     }
 }
 
+pub struct ReadFile;
+
 #[async_trait]
 impl Tool for ReadFile {
     fn name(&self) -> &str {
@@ -38,18 +40,41 @@ impl Tool for ReadFile {
                 "path": {
                     "type":"string",
                     "description": "Path to the file to read"
-                },
-                "required":["path"]
-            }
+                }
+
+            },
+            "required":["path"]
         })
     }
 
-    async fn execute(&self, args: Value)-> Result<Value>{
-        let path = args["path"].as_str().ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let path = args["path"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
 
         let content = tokio::fs::read_to_string(path).await?;
 
         Ok(serde_json::json!({"content": content}))
+    }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reads_an_existing_file() {
+        let result = ReadFile
+            .execute(serde_json::json!({ "path": "Cargo.toml" }))
+            .await
+            .unwrap();
+        let content = result["content"].as_str().unwrap();
+        assert!(content.contains("vc-tools"));
+    }
+
+    #[tokio::test]
+    async fn errors_when_path_is_missing() {
+        let result = ReadFile.execute(serde_json::json!({})).await;
+        assert!(result.is_err());
     }
 }
