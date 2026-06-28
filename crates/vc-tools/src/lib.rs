@@ -8,17 +8,15 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> Value;
 
-    async fn execute(&self, args:Value)-> Result<Value>;
+    async fn execute(&self, args: Value) -> Result<Value>;
 
-    fn to_api_definitions(&self)-> Value{
+    fn to_api_definitions(&self) -> Value {
         serde_json::json!({
-            "type":"function",
-            "function":{
-                "name":self.name(),
-                "description": self.description(),
-                "parameters": self.parameters_schema(),}
-            })
+        "type":"function",
+        "function":{
+            "name":self.name(),
+            "description": self.description(),
+            "parameters": self.parameters_schema(),}
+        })
     }
-
-
 }

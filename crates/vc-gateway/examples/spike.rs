@@ -13,6 +13,9 @@ async fn main() -> anyhow::Result<()> {
 
     let (text, usage) = client.chat(&messages).await?;
     println!("Reply: {text}");
-    println!("Tokens: {} in / {} out", usage.input_tokens, usage.output_tokens);
+    println!(
+        "Tokens: {} in / {} out",
+        usage.input_tokens, usage.output_tokens
+    );
     Ok(())
 }

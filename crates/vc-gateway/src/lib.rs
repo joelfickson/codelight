@@ -59,7 +59,8 @@ impl From<ApiUsage> for Usage {
 
 impl GatewayClient {
     pub fn from_env() -> Result<Self, GatewayError> {
-        let api_key = std::env::var("AI_GATEWAY_API_KEY").map_err(|_| GatewayError::MissingApiKey)?;
+        let api_key =
+            std::env::var("AI_GATEWAY_API_KEY").map_err(|_| GatewayError::MissingApiKey)?;
         Ok(Self {
             http: reqwest::Client::new(),
             api_key,
