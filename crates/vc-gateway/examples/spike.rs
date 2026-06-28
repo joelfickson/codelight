@@ -1,3 +1,5 @@
+use anyhow::Ok;
+use futures::{StreamExt, stream};
 use vc_gateway::models::gateway::GatewayClient;
 use vc_types::{Message, Role};
 
@@ -11,11 +13,29 @@ async fn main() -> anyhow::Result<()> {
         content: "Say hello to a new Rust developer in exactly five words.".to_string(),
     }];
 
-    let (text, usage) = client.chat(&messages).await?;
-    println!("Reply: {text}");
-    println!(
-        "Tokens: {} in / {} out",
-        usage.input_tokens, usage.output_tokens
-    );
+    let mut stream = client.chat_stream(&messages).await?;
+
+    while let Some(event) = stream.next().await {
+        match event {
+            vc_types::StreamEvent::Done { usage } => println!("Here is usage {:?} ", usage),
+            vc_types::StreamEvent::Error(error) => {
+                if !error.is_empty() {
+                    println!("Here is the error : {:?} ", error);
+                }
+            }
+            vc_types::StreamEvent::Token(tokens) => println!("Here is the error : {:?} ", tokens),
+            vc_types::StreamEvent::ToolCallStart { id, name } => {
+                println!("ID of tool {:#?}", id);
+                println!("name of tool {:#?}", name);
+            }
+            vc_types::StreamEvent::ToolCallArgs { id, chunk } => {
+                println!("args for {id}: {chunk}");
+            }
+            vc_types::StreamEvent::ToolCallEnd { id } => {
+                println!("tool {id} finished");
+            }
+        }
+    }
+
     Ok(())
 }

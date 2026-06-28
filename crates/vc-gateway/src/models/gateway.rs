@@ -1,5 +1,11 @@
+use std::collections::HashMap;
+
+use async_stream::stream;
+use eventsource_stream::Eventsource;
+use futures::StreamExt;
+use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
-use vc_types::{Message, Usage};
+use vc_types::{Message, StreamEvent, Usage};
 
 pub const GATEWAY_URL: &str = "https://ai-gateway.vercel.sh/v1/chat/completions";
 pub const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4-6";
@@ -28,6 +34,7 @@ struct ChatChunk {
 #[derive(Deserialize)]
 struct ChunkChoice {
     delta: Delta,
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -40,6 +47,7 @@ struct Delta {
 struct ToolCallDelta {
     index: u32,
     id: Option<String>,
+    function: Option<FunctionDelta>,
 }
 
 #[derive(Deserialize)]
@@ -144,5 +152,111 @@ impl GatewayClient {
             .unwrap_or_default();
 
         Ok((text, parsed.usage.into()))
+    }
+
+    pub async fn chat_stream(
+        &self,
+        messages: &[Message],
+    ) -> Result<BoxStream<'static, StreamEvent>, GatewayError> {
+        let request = ChatStreamRequest {
+            model: DEFAULT_MODEL,
+            messages,
+            max_tokens: 1024,
+            stream: true,
+            stream_options: StreamOptions {
+                include_usage: true,
+            },
+        };
+
+        let response = self
+            .http
+            .post(GATEWAY_URL)
+            .bearer_auth(&self.api_key)
+            .json(&request)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(GatewayError::Status {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let mut events = response.bytes_stream().eventsource();
+
+        let stream = stream! {
+            let mut tool_ids: HashMap<u32, String> = HashMap::new();
+
+            while let Some(event) = events.next().await {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(err) => {
+                        yield StreamEvent::Error(err.to_string());
+                        break;
+                    }
+                };
+
+                if event.data == "[DONE]" {
+                    break;
+                }
+
+                let chunk: ChatChunk = match serde_json::from_str(&event.data) {
+                    Ok(chunk) => chunk,
+                    Err(err) => {
+                        yield StreamEvent::Error(format!("bad chunk: {err}"));
+                        continue;
+                    }
+                };
+
+                if let Some(usage) = chunk.usage {
+                    yield StreamEvent::Done { usage: usage.into() };
+                }
+
+                let Some(choice) = chunk.choices.into_iter().next() else {
+                    continue;
+                };
+
+                if let Some(content) = choice.delta.content {
+                    if !content.is_empty() {
+                        yield StreamEvent::Token(content);
+                    }
+                }
+
+                if let Some(tool_calls) = choice.delta.tool_calls {
+                    for tc in tool_calls {
+                        let ToolCallDelta { index, id, function } = tc;
+                        if let Some(function) = function {
+                            if let (Some(id), Some(name)) = (id, function.name) {
+                                tool_ids.insert(index, id.clone());
+                                yield StreamEvent::ToolCallStart { id, name };
+                            }
+                            if let Some(arguments) = function.arguments {
+                                if !arguments.is_empty() {
+                                    if let Some(existing_id) = tool_ids.get(&index) {
+                                        yield StreamEvent::ToolCallArgs {
+                                            id: existing_id.clone(),
+                                            chunk: arguments,
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(reason) = choice.finish_reason {
+                    if reason == "tool_calls" {
+                        for (_, id) in tool_ids.drain() {
+                            yield StreamEvent::ToolCallEnd { id };
+                        }
+                    }
+                }
+            }
+        };
+
+        Ok(stream.boxed())
     }
 }
