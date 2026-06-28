@@ -1,0 +1,6 @@
+{
+  "format_on_save": "on",
+  "languages": {
+    "Rust": { "formatter": "language_server" },
+  },
+}
