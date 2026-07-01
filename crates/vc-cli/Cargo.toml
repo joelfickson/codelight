@@ -12,6 +12,7 @@ vc-types = { workspace = true }
 vc-gateway = { workspace = true }
 vc-tools = { workspace = true }
 vc-agent = { workspace = true }
+vc-skills = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 ratatui = { workspace = true }

@@ -14,3 +14,4 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 dotenvy = { workspace = true }
+vc-skills = { workspace = true }

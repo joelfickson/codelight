@@ -2,6 +2,7 @@ use std::io::Write;
 use tokio::sync::mpsc;
 use vc_agent::Agent;
 use vc_gateway::GatewayClient;
+use vc_skills::{LoadSkill, ReadSkillResource, SkillRegistry};
 use vc_tools::{
     DeleteFile, EditFile, ListDirectory, MoveFile, ReadFile, RunCommand, SearchDocs, SearchInFiles,
     ToolRegistry, WebFetch, WriteFile,
@@ -26,7 +27,12 @@ async fn main() -> anyhow::Result<()> {
     tools.register(Box::new(RunCommand));
     tools.register(Box::new(WebFetch));
 
+    let skills = std::sync::Arc::new(SkillRegistry::load());
+    tools.register(Box::new(LoadSkill::new(skills.clone())));
+    tools.register(Box::new(ReadSkillResource::new(skills.clone())));
+
     let mut agent = Agent::new(gateway, tools);
+    agent.set_skills(&skills.advertise());
 
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
 
@@ -51,7 +57,10 @@ async fn main() -> anyhow::Result<()> {
     });
 
     agent
-        .run("Tell me more about eve, Vercel's agent framework.", tx)
+        .run(
+            "Consult your nextjs-app-router skill, then tell me where a route-level loading state goes and how it streams.",
+            tx,
+        )
         .await?;
 
     printer.await?;

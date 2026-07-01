@@ -25,6 +25,12 @@ impl Agent {
         }
     }
 
+    pub fn set_skills(&mut self, advertisement: &str) {
+        if !advertisement.is_empty() {
+            self.history[0] = Message::system(format!("{SYSTEM_PROMPT}\n\n{advertisement}"));
+        }
+    }
+
     pub async fn run(
         &mut self,
         user_message: &str,
