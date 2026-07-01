@@ -29,6 +29,8 @@ struct Cli {
     demo: bool,
     #[arg(long, help = "Gateway model id to use, e.g. anthropic/claude-opus-4-6")]
     model: Option<String>,
+    #[arg(long, help = "List available Gateway models and exit")]
+    list_models: bool,
 }
 
 #[tokio::main]
@@ -40,7 +42,19 @@ async fn main() -> Result<()> {
         return check().await;
     }
 
+    if cli.list_models {
+        return list_models_cli().await;
+    }
+
     run(cli.demo, cli.model).await
+}
+
+async fn list_models_cli() -> Result<()> {
+    let gateway = GatewayClient::from_env()?;
+    for id in gateway.list_models().await? {
+        println!("{id}");
+    }
+    Ok(())
 }
 
 fn project_name() -> String {
@@ -53,8 +67,15 @@ fn project_name() -> String {
         .unwrap_or_else(|| "project".to_string())
 }
 
-fn model_label(model: &str) -> String {
-    model.split('/').next_back().unwrap_or(model).to_string()
+fn model_alias(model: &str) -> String {
+    let short = model.split('/').next_back().unwrap_or(model);
+    if let Some(rest) = short.strip_prefix("claude-") {
+        if let Some((tier, version)) = rest.split_once('-') {
+            return format!("{tier} {}", version.replace('-', "."));
+        }
+        return rest.to_string();
+    }
+    short.to_string()
 }
 
 async fn check() -> Result<()> {
@@ -73,7 +94,7 @@ async fn run(demo: bool, model_flag: Option<String>) -> Result<()> {
     let model = model_flag
         .or_else(|| std::env::var("CODELIGHT_MODEL").ok())
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
-    let mut app = App::new(project_name(), model_label(&model));
+    let mut app = App::new(project_name(), model_alias(&model));
     let mut agent: Option<Agent> = if demo {
         app.seed_demo();
         None
@@ -133,14 +154,18 @@ async fn run(demo: bool, model_flag: Option<String>) -> Result<()> {
                     KeyCode::Enter => {
                         let text = app.input.value().trim().to_string();
                         if text == "/model" || text.starts_with("/model ") {
-                            let new_model = text.strip_prefix("/model").unwrap_or("").trim();
+                            let arg = text.strip_prefix("/model").unwrap_or("").trim().to_string();
                             app.input.reset();
-                            if !new_model.is_empty()
-                                && let Some(active) = agent.as_mut()
-                            {
-                                active.set_model(new_model);
-                                app.set_model(model_label(new_model));
-                                app.info(&format!("model set to {new_model}"));
+                            if arg.contains('/') {
+                                if let Some(active) = agent.as_mut() {
+                                    active.set_model(&arg);
+                                    app.set_model(model_alias(&arg));
+                                    app.info(&format!("model set to {arg}"));
+                                }
+                            } else if let Some(active) = agent.as_ref() {
+                                let gateway = active.gateway_client();
+                                let tx = events_tx.clone();
+                                tokio::spawn(async move { list_models(gateway, arg, tx).await });
                             }
                         } else if !text.is_empty()
                             && let Some(mut ready) = agent.take()
@@ -183,6 +208,42 @@ async fn run(demo: bool, model_flag: Option<String>) -> Result<()> {
     Ok(())
 }
 
+async fn list_models(gateway: GatewayClient, filter: String, tx: mpsc::Sender<AgentEvent>) {
+    let models = match gateway.list_models().await {
+        Ok(models) => models,
+        Err(err) => {
+            tx.send(AgentEvent::Error(format!("could not list models: {err}")))
+                .await
+                .ok();
+            return;
+        }
+    };
+    let matches: Vec<String> = if filter.is_empty() {
+        models
+    } else {
+        let needle = filter.to_lowercase();
+        models
+            .into_iter()
+            .filter(|m| m.to_lowercase().contains(&needle))
+            .collect()
+    };
+    let total = matches.len();
+    let header = if filter.is_empty() {
+        format!("{total} models - filter with /model <keyword>, switch with /model <provider/id>")
+    } else {
+        format!("{total} models matching '{filter}'")
+    };
+    tx.send(AgentEvent::Info(header)).await.ok();
+    for id in matches.iter().take(40) {
+        tx.send(AgentEvent::Info(format!("  {id}"))).await.ok();
+    }
+    if total > 40 {
+        tx.send(AgentEvent::Info(format!("  … and {} more", total - 40)))
+            .await
+            .ok();
+    }
+}
+
 fn to_request(code: KeyCode) -> Option<InputRequest> {
     match code {
         KeyCode::Char(c) => Some(InputRequest::InsertChar(c)),
@@ -193,5 +254,18 @@ fn to_request(code: KeyCode) -> Option<InputRequest> {
         KeyCode::Home => Some(InputRequest::GoToStart),
         KeyCode::End => Some(InputRequest::GoToEnd),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_alias;
+
+    #[test]
+    fn aliases_models() {
+        assert_eq!(model_alias("anthropic/claude-sonnet-4-6"), "sonnet 4.6");
+        assert_eq!(model_alias("anthropic/claude-haiku-4.5"), "haiku 4.5");
+        assert_eq!(model_alias("anthropic/claude-opus-4-6"), "opus 4.6");
+        assert_eq!(model_alias("openai/gpt-5"), "gpt-5");
     }
 }

@@ -35,6 +35,10 @@ impl Agent {
         self.gateway.set_model(model);
     }
 
+    pub fn gateway_client(&self) -> GatewayClient {
+        self.gateway.clone()
+    }
+
     pub async fn run(
         &mut self,
         user_message: &str,

@@ -9,6 +9,7 @@ use serde_json::Value;
 use vc_types::{Message, StreamEvent, Usage};
 
 pub const GATEWAY_URL: &str = "https://ai-gateway.vercel.sh/v1/chat/completions";
+pub const MODELS_URL: &str = "https://ai-gateway.vercel.sh/v1/models";
 pub const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4-6";
 
 #[derive(Serialize)]
@@ -69,6 +70,7 @@ pub enum GatewayError {
     Status { status: u16, body: String },
 }
 
+#[derive(Clone)]
 pub struct GatewayClient {
     http: reqwest::Client,
     api_key: String,
@@ -80,6 +82,16 @@ struct ChatRequest<'a> {
     model: &'a str,
     messages: &'a [Message],
     max_tokens: u32,
+}
+
+#[derive(Deserialize)]
+struct ModelsResponse {
+    data: Vec<ModelEntry>,
+}
+
+#[derive(Deserialize)]
+struct ModelEntry {
+    id: String,
 }
 
 #[derive(Deserialize)]
@@ -131,6 +143,27 @@ impl GatewayClient {
 
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
+    }
+
+    pub async fn list_models(&self) -> Result<Vec<String>, GatewayError> {
+        let response = self
+            .http
+            .get(MODELS_URL)
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(GatewayError::Status {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let parsed: ModelsResponse = response.json().await?;
+        let mut ids: Vec<String> = parsed.data.into_iter().map(|entry| entry.id).collect();
+        ids.sort();
+        Ok(ids)
     }
 
     pub async fn chat(&self, messages: &[Message]) -> Result<(String, Usage), GatewayError> {
