@@ -2,7 +2,7 @@ use std::io::Write;
 use tokio::sync::mpsc;
 use vc_agent::Agent;
 use vc_gateway::GatewayClient;
-use vc_skills::{LoadSkill, ReadSkillResource, SkillRegistry};
+use vc_skills::{AddSkill, LoadSkill, ReadSkillResource, SearchSkills, SkillRegistry};
 use vc_tools::{
     DeleteFile, EditFile, ListDirectory, MoveFile, ReadFile, RunCommand, SearchDocs, SearchInFiles,
     ToolRegistry, WebFetch, WriteFile,
@@ -30,6 +30,8 @@ async fn main() -> anyhow::Result<()> {
     let skills = std::sync::Arc::new(SkillRegistry::load());
     tools.register(Box::new(LoadSkill::new(skills.clone())));
     tools.register(Box::new(ReadSkillResource::new(skills.clone())));
+    tools.register(Box::new(SearchSkills));
+    tools.register(Box::new(AddSkill));
 
     let mut agent = Agent::new(gateway, tools);
     agent.set_skills(&skills.advertise());
@@ -58,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
 
     agent
         .run(
-            "Consult your nextjs-app-router skill, then tell me where a route-level loading state goes and how it streams.",
+            "I'm about to deploy my Next.js app to Vercel. Verify it's ready to ship.",
             tx,
         )
         .await?;

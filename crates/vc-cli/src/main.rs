@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use tui_input::InputRequest;
 use vc_agent::Agent;
 use vc_gateway::{DEFAULT_MODEL, GatewayClient};
-use vc_skills::{LoadSkill, ReadSkillResource, SkillRegistry};
+use vc_skills::{AddSkill, LoadSkill, ReadSkillResource, SearchSkills, SkillRegistry};
 use vc_tools::{
     DeleteFile, EditFile, ListDirectory, MoveFile, ReadFile, RunCommand, SearchDocs, SearchInFiles,
     ToolRegistry, WebFetch, WriteFile,
@@ -92,6 +92,8 @@ async fn run(demo: bool) -> Result<()> {
         tools.register(Box::new(WebFetch));
         tools.register(Box::new(LoadSkill::new(skills.clone())));
         tools.register(Box::new(ReadSkillResource::new(skills.clone())));
+        tools.register(Box::new(SearchSkills));
+        tools.register(Box::new(AddSkill));
         let mut agent = Agent::new(gateway, tools);
         agent.set_skills(&skills.advertise());
         Some(agent)
