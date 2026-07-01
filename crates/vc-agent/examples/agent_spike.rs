@@ -51,10 +51,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     agent
-        .run(
-            "How does loading.tsx work in the Next.js App Router? Search the docs and cite what you find.",
-            tx,
-        )
+        .run("Tell me more about eve, Vercel's agent framework.", tx)
         .await?;
 
     printer.await?;
