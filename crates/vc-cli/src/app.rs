@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -25,9 +23,6 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 enum Kind {
     User,
     Assistant,
-    ToolRunning,
-    ToolDone,
-    ToolFailed,
     Error,
     Info,
 }
@@ -54,9 +49,6 @@ impl Entry {
                 lines.push(Line::default());
                 lines
             }
-            Kind::ToolRunning => vec![tool_line(&self.text, "●", WARN)],
-            Kind::ToolDone => vec![tool_line(&self.text, "✓", OK)],
-            Kind::ToolFailed => vec![tool_line(&self.text, "✗", ERR)],
             Kind::Error => vec![
                 Line::from(Span::styled(
                     format!("! {}", self.text),
@@ -72,18 +64,6 @@ impl Entry {
     }
 }
 
-fn tool_line(label: &str, mark: &str, mark_color: Color) -> Line<'static> {
-    let (name, arg) = label.split_once(' ').unwrap_or((label, ""));
-    let mut spans = vec![
-        Span::styled(format!("  {mark} "), Style::default().fg(mark_color)),
-        Span::styled(name.to_string(), Style::default().fg(MUTED)),
-    ];
-    if !arg.is_empty() {
-        spans.push(Span::styled(format!("  {arg}"), Style::default().fg(FG)));
-    }
-    Line::from(spans)
-}
-
 pub enum Preview {
     Idle,
     Ready { url: String, secs: String },
@@ -94,7 +74,6 @@ pub struct App {
     project: String,
     model: String,
     entries: Vec<Entry>,
-    tools: HashMap<String, usize>,
     assistant: Option<usize>,
     preview: Preview,
     steps: u32,
@@ -111,7 +90,6 @@ impl App {
             project,
             model,
             entries: Vec::new(),
-            tools: HashMap::new(),
             assistant: None,
             preview: Preview::Idle,
             steps: 0,
@@ -144,19 +122,10 @@ impl App {
                     self.assistant = Some(self.entries.len() - 1);
                 }
             },
-            AgentEvent::ToolStarted { id, label } => {
+            AgentEvent::ToolStarted { .. } => {
                 self.assistant = None;
-                self.entries.push(Entry {
-                    kind: Kind::ToolRunning,
-                    text: label,
-                });
-                self.tools.insert(id, self.entries.len() - 1);
             }
-            AgentEvent::ToolFinished { id, ok } => {
-                if let Some(&index) = self.tools.get(&id) {
-                    self.entries[index].kind = if ok { Kind::ToolDone } else { Kind::ToolFailed };
-                }
-            }
+            AgentEvent::ToolFinished { .. } => {}
             AgentEvent::StepComplete => {
                 self.assistant = None;
                 self.steps += 1;
@@ -198,23 +167,7 @@ impl App {
         self.push_user("ship the dashboard spinner to a preview");
         self.entries.push(Entry {
             kind: Kind::Assistant,
-            text: "Typechecking and deploying a preview - progress is in the rail.".to_string(),
-        });
-        self.entries.push(Entry {
-            kind: Kind::ToolDone,
-            text: "write app/dashboard/loading.tsx".to_string(),
-        });
-        self.entries.push(Entry {
-            kind: Kind::ToolDone,
-            text: "typecheck tsc --noEmit".to_string(),
-        });
-        self.entries.push(Entry {
-            kind: Kind::ToolDone,
-            text: "deploy preview".to_string(),
-        });
-        self.entries.push(Entry {
-            kind: Kind::Assistant,
-            text: "Live. The link is in the rail.".to_string(),
+            text: "Added a route-level loading spinner, typechecked, and deployed a preview. The link is in the rail.".to_string(),
         });
         self.preview = Preview::Ready {
             url: "my-app-git-spinner.vercel.app".to_string(),
@@ -270,7 +223,10 @@ impl App {
     }
 
     fn render_conversation(&mut self, frame: &mut Frame, area: ratatui::layout::Rect) {
-        let lines: Vec<Line> = self.entries.iter().flat_map(Entry::to_lines).collect();
+        let mut lines: Vec<Line> = self.entries.iter().flat_map(Entry::to_lines).collect();
+        if self.thinking && self.assistant.is_none() {
+            lines.push(thinking_line(self.tick));
+        }
 
         let width = area.width.saturating_sub(2).max(1);
         let height = area.height;
@@ -401,6 +357,22 @@ impl App {
             cols[1],
         );
     }
+}
+
+fn thinking_line(tick: usize) -> Line<'static> {
+    const TRACK: usize = 14;
+    const WIN: usize = 3;
+    let pos = tick % (TRACK - WIN + 1);
+    let mut spans = vec![Span::styled("  thinking  ", Style::default().fg(MUTED))];
+    for i in 0..TRACK {
+        let (glyph, color) = if i >= pos && i < pos + WIN {
+            ("━", ACCENT)
+        } else {
+            ("─", FAINT)
+        };
+        spans.push(Span::styled(glyph, Style::default().fg(color)));
+    }
+    Line::from(spans)
 }
 
 fn label(text: &str) -> Line<'static> {
@@ -621,8 +593,8 @@ mod tests {
 
         let text = draw(&mut app);
         assert!(text.contains("read package.json"));
-        assert!(text.contains("app/dashboard/page.tsx"));
         assert!(text.contains("Found it."));
+        assert!(!text.contains("app/dashboard/page.tsx"));
     }
 
     #[test]
@@ -636,18 +608,11 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_tool_is_marked() {
+    fn shows_thinking_indicator_while_working() {
         let mut app = app();
-        app.apply(AgentEvent::ToolStarted {
-            id: "call_9".to_string(),
-            label: "deploy preview".to_string(),
-        });
-        app.apply(AgentEvent::ToolFinished {
-            id: "call_9".to_string(),
-            ok: false,
-        });
+        app.push_user("do something");
         let text = draw(&mut app);
-        assert!(text.contains("✗"));
+        assert!(text.contains("thinking"));
     }
 
     #[test]
