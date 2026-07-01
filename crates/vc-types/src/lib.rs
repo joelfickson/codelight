@@ -130,6 +130,7 @@ pub enum StreamEvent {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     ModelSelected(String),
+    ModelList(Vec<String>),
     Token(String),
     ToolStarted { id: String, label: String },
     ToolFinished { id: String, ok: bool },

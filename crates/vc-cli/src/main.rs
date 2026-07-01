@@ -148,6 +148,29 @@ async fn run(demo: bool, model_flag: Option<String>) -> Result<()> {
                     continue;
                 }
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                if app.picker_is_open() {
+                    match key.code {
+                        KeyCode::Char('c') if ctrl => quit = true,
+                        KeyCode::Esc => app.close_picker(),
+                        KeyCode::Up => app.picker_up(),
+                        KeyCode::Down => app.picker_down(),
+                        KeyCode::Backspace => app.picker_backspace(),
+                        KeyCode::Enter => {
+                            let chosen = app.picker_selected().map(str::to_string);
+                            app.close_picker();
+                            if let Some(model) = chosen
+                                && let Some(active) = agent.as_mut()
+                            {
+                                active.set_model(&model);
+                                app.set_model(model_alias(&model));
+                                app.info(&format!("model set to {model}"));
+                            }
+                        }
+                        KeyCode::Char(c) => app.picker_input(c),
+                        _ => {}
+                    }
+                    continue;
+                }
                 match key.code {
                     KeyCode::Esc => quit = true,
                     KeyCode::Char('c') if ctrl => quit = true,
@@ -163,9 +186,14 @@ async fn run(demo: bool, model_flag: Option<String>) -> Result<()> {
                                     app.info(&format!("model set to {arg}"));
                                 }
                             } else if let Some(active) = agent.as_ref() {
+                                app.open_picker(&arg);
                                 let gateway = active.gateway_client();
                                 let tx = events_tx.clone();
-                                tokio::spawn(async move { list_models(gateway, arg, tx).await });
+                                tokio::spawn(async move {
+                                    if let Ok(models) = gateway.list_models().await {
+                                        tx.send(AgentEvent::ModelList(models)).await.ok();
+                                    }
+                                });
                             }
                         } else if !text.is_empty()
                             && let Some(mut ready) = agent.take()
@@ -206,42 +234,6 @@ async fn run(demo: bool, model_flag: Option<String>) -> Result<()> {
 
     ratatui::restore();
     Ok(())
-}
-
-async fn list_models(gateway: GatewayClient, filter: String, tx: mpsc::Sender<AgentEvent>) {
-    let models = match gateway.list_models().await {
-        Ok(models) => models,
-        Err(err) => {
-            tx.send(AgentEvent::Error(format!("could not list models: {err}")))
-                .await
-                .ok();
-            return;
-        }
-    };
-    let matches: Vec<String> = if filter.is_empty() {
-        models
-    } else {
-        let needle = filter.to_lowercase();
-        models
-            .into_iter()
-            .filter(|m| m.to_lowercase().contains(&needle))
-            .collect()
-    };
-    let total = matches.len();
-    let header = if filter.is_empty() {
-        format!("{total} models - filter with /model <keyword>, switch with /model <provider/id>")
-    } else {
-        format!("{total} models matching '{filter}'")
-    };
-    tx.send(AgentEvent::Info(header)).await.ok();
-    for id in matches.iter().take(40) {
-        tx.send(AgentEvent::Info(format!("  {id}"))).await.ok();
-    }
-    if total > 40 {
-        tx.send(AgentEvent::Info(format!("  … and {} more", total - 40)))
-            .await
-            .ok();
-    }
 }
 
 fn to_request(code: KeyCode) -> Option<InputRequest> {

@@ -1,8 +1,8 @@
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap};
 use tui_input::Input;
 use vc_types::AgentEvent;
 
@@ -81,6 +81,35 @@ pub struct App {
     scroll: u16,
     follow: bool,
     tick: usize,
+    picker: Option<Picker>,
+}
+
+struct Picker {
+    query: String,
+    all: Vec<String>,
+    filtered: Vec<usize>,
+    selected: usize,
+    loading: bool,
+}
+
+impl Picker {
+    fn refilter(&mut self) {
+        let needle = self.query.to_lowercase();
+        self.filtered = self
+            .all
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| needle.is_empty() || m.to_lowercase().contains(&needle))
+            .map(|(i, _)| i)
+            .collect();
+        self.selected = 0;
+    }
+
+    fn selected_model(&self) -> Option<&str> {
+        self.filtered
+            .get(self.selected)
+            .map(|&i| self.all[i].as_str())
+    }
 }
 
 impl App {
@@ -97,6 +126,7 @@ impl App {
             scroll: 0,
             follow: true,
             tick: 0,
+            picker: None,
         }
     }
 
@@ -142,6 +172,7 @@ impl App {
                 text: message,
             }),
             AgentEvent::ModelSelected(model) => self.model = model,
+            AgentEvent::ModelList(models) => self.set_picker_models(models),
             AgentEvent::Done => {
                 self.thinking = false;
                 self.assistant = None;
@@ -173,6 +204,66 @@ impl App {
             text: message.to_string(),
         });
         self.follow = true;
+    }
+
+    pub fn open_picker(&mut self, query: &str) {
+        self.picker = Some(Picker {
+            query: query.to_string(),
+            all: Vec::new(),
+            filtered: Vec::new(),
+            selected: 0,
+            loading: true,
+        });
+    }
+
+    pub fn set_picker_models(&mut self, models: Vec<String>) {
+        if let Some(picker) = self.picker.as_mut() {
+            picker.all = models;
+            picker.loading = false;
+            picker.refilter();
+        }
+    }
+
+    pub fn picker_is_open(&self) -> bool {
+        self.picker.is_some()
+    }
+
+    pub fn picker_input(&mut self, c: char) {
+        if let Some(picker) = self.picker.as_mut() {
+            picker.query.push(c);
+            picker.refilter();
+        }
+    }
+
+    pub fn picker_backspace(&mut self) {
+        if let Some(picker) = self.picker.as_mut() {
+            picker.query.pop();
+            picker.refilter();
+        }
+    }
+
+    pub fn picker_up(&mut self) {
+        if let Some(picker) = self.picker.as_mut()
+            && picker.selected > 0
+        {
+            picker.selected -= 1;
+        }
+    }
+
+    pub fn picker_down(&mut self) {
+        if let Some(picker) = self.picker.as_mut()
+            && picker.selected + 1 < picker.filtered.len()
+        {
+            picker.selected += 1;
+        }
+    }
+
+    pub fn picker_selected(&self) -> Option<&str> {
+        self.picker.as_ref().and_then(Picker::selected_model)
+    }
+
+    pub fn close_picker(&mut self) {
+        self.picker = None;
     }
 
     pub fn seed_demo(&mut self) {
@@ -207,6 +298,78 @@ impl App {
 
         self.render_input(frame, root[2]);
         self.render_status(frame, root[3]);
+
+        if self.picker.is_some() {
+            self.render_picker(frame);
+        }
+    }
+
+    fn render_picker(&self, frame: &mut Frame) {
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+        let area = centered_rect(72, 72, frame.area());
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(ACCENT))
+            .title(" select model ")
+            .padding(Padding::new(1, 1, 0, 0));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let rows = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+
+        let search = Line::from(vec![
+            Span::styled("search ", Style::default().fg(MUTED)),
+            Span::styled(picker.query.clone(), Style::default().fg(FG)),
+        ]);
+        frame.render_widget(Paragraph::new(search), rows[0]);
+
+        let status = if picker.loading {
+            "loading models…".to_string()
+        } else {
+            format!(
+                "{} matches · ↑↓ move · enter select · esc cancel",
+                picker.filtered.len()
+            )
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(status, Style::default().fg(FAINT)))),
+            rows[1],
+        );
+
+        let height = rows[2].height as usize;
+        let start = if height > 0 && picker.selected >= height {
+            picker.selected + 1 - height
+        } else {
+            0
+        };
+        let end = (start + height).min(picker.filtered.len());
+        let mut lines = Vec::new();
+        for i in start..end {
+            let id = &picker.all[picker.filtered[i]];
+            if i == picker.selected {
+                lines.push(Line::from(Span::styled(
+                    format!("› {id}"),
+                    Style::default().fg(Color::Black).bg(ACCENT),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("  {id}"),
+                    Style::default().fg(FG),
+                )));
+            }
+        }
+        frame.render_widget(Paragraph::new(lines), rows[2]);
+
+        let cursor_x = rows[0].x + 7 + picker.query.chars().count() as u16;
+        frame.set_cursor_position((cursor_x, rows[0].y));
     }
 
     fn render_header(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -391,6 +554,17 @@ fn thinking_line(tick: usize) -> Line<'static> {
         spans.push(Span::styled(glyph, Style::default().fg(color)));
     }
     Line::from(spans)
+}
+
+fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
+    let w = area.width * pct_x / 100;
+    let h = area.height * pct_y / 100;
+    Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    }
 }
 
 fn label(text: &str) -> Line<'static> {
@@ -602,6 +776,42 @@ mod tests {
         assert!(text.contains("claude-sonnet-4-6"));
         app.set_model("gpt-5".to_string());
         assert!(draw(&mut app).contains("gpt-5"));
+    }
+
+    #[test]
+    fn picker_filters_and_navigates() {
+        let mut app = app();
+        app.open_picker("opus");
+        app.set_picker_models(vec![
+            "anthropic/claude-haiku-4.5".to_string(),
+            "anthropic/claude-opus-4.5".to_string(),
+            "anthropic/claude-opus-4.6".to_string(),
+            "openai/gpt-5".to_string(),
+        ]);
+        assert!(app.picker_is_open());
+        assert_eq!(app.picker_selected(), Some("anthropic/claude-opus-4.5"));
+        app.picker_down();
+        assert_eq!(app.picker_selected(), Some("anthropic/claude-opus-4.6"));
+        app.picker_input('x');
+        assert_eq!(app.picker_selected(), None);
+        app.picker_backspace();
+        assert_eq!(app.picker_selected(), Some("anthropic/claude-opus-4.5"));
+        app.close_picker();
+        assert!(!app.picker_is_open());
+    }
+
+    #[test]
+    fn picker_modal_renders() {
+        let mut app = app();
+        app.open_picker("claude");
+        app.set_picker_models(vec![
+            "anthropic/claude-haiku-4.5".to_string(),
+            "openai/gpt-5".to_string(),
+        ]);
+        let text = draw(&mut app);
+        assert!(text.contains("select model"));
+        assert!(text.contains("claude-haiku-4.5"));
+        assert!(!text.contains("gpt-5"));
     }
 
     #[test]
