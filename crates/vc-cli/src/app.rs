@@ -73,17 +73,15 @@ impl Entry {
 }
 
 fn tool_line(label: &str, mark: &str, mark_color: Color) -> Line<'static> {
-    let (verb, target) = label.split_once(' ').unwrap_or((label, ""));
-    Line::from(vec![
-        Span::raw("  "),
-        Span::styled(
-            format!("{:<10}", verb.to_uppercase()),
-            Style::default().fg(MUTED),
-        ),
-        Span::styled(target.to_string(), Style::default().fg(FG)),
-        Span::raw("  "),
-        Span::styled(mark.to_string(), Style::default().fg(mark_color)),
-    ])
+    let (name, arg) = label.split_once(' ').unwrap_or((label, ""));
+    let mut spans = vec![
+        Span::styled(format!("  {mark} "), Style::default().fg(mark_color)),
+        Span::styled(name.to_string(), Style::default().fg(MUTED)),
+    ];
+    if !arg.is_empty() {
+        spans.push(Span::styled(format!("  {arg}"), Style::default().fg(FG)));
+    }
+    Line::from(spans)
 }
 
 pub enum Preview {
@@ -623,7 +621,7 @@ mod tests {
 
         let text = draw(&mut app);
         assert!(text.contains("read package.json"));
-        assert!(text.contains("READ"));
+        assert!(text.contains("app/dashboard/page.tsx"));
         assert!(text.contains("Found it."));
     }
 

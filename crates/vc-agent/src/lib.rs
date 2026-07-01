@@ -49,13 +49,6 @@ impl Agent {
                         events.send(AgentEvent::Token(text)).await.ok();
                     }
                     StreamEvent::ToolCallStart { id, name } => {
-                        events
-                            .send(AgentEvent::ToolStarted {
-                                id: id.clone(),
-                                label: name.clone(),
-                            })
-                            .await
-                            .ok();
                         calls.push(ToolCall {
                             id,
                             name,
@@ -87,6 +80,13 @@ impl Agent {
                 .push(Message::assistant_tool_calls(calls.clone()));
 
             for call in calls {
+                events
+                    .send(AgentEvent::ToolStarted {
+                        id: call.id.clone(),
+                        label: summarize(&call),
+                    })
+                    .await
+                    .ok();
                 let result = self.execute(&call, &events).await;
                 self.history.push(Message::tool_result(call.id, result));
             }
@@ -132,5 +132,25 @@ impl Agent {
                 serde_json::json!({ "error": err.to_string() }).to_string()
             }
         }
+    }
+}
+
+fn summarize(call: &ToolCall) -> String {
+    let value: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
+    let arg = ["query", "url", "path", "command", "from", "old_string"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str));
+    match arg {
+        Some(text) => {
+            let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let short = if flat.chars().count() > 56 {
+                let head: String = flat.chars().take(56).collect();
+                format!("{head}…")
+            } else {
+                flat
+            };
+            format!("{} {}", call.name, short)
+        }
+        None => call.name.clone(),
     }
 }
