@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use tui_input::InputRequest;
 use vc_agent::Agent;
 use vc_gateway::{DEFAULT_MODEL, GatewayClient};
-use vc_tools::{ReadFile, ToolRegistry};
+use vc_tools::{ListDirectory, ReadFile, ToolRegistry, WriteFile};
 use vc_types::{AgentEvent, Message};
 
 use app::App;
@@ -76,6 +76,8 @@ async fn run(demo: bool) -> Result<()> {
         let gateway = GatewayClient::from_env()?;
         let mut tools = ToolRegistry::new();
         tools.register(Box::new(ReadFile));
+        tools.register(Box::new(WriteFile));
+        tools.register(Box::new(ListDirectory));
         Some(Agent::new(gateway, tools))
     };
 
