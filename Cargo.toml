@@ -30,7 +30,7 @@ clap = { version = "4", features = ["derive"] }
 
 
 ratatui = "0.30"
-tui-input = "0.14"
+tui-input = { version = "0.14", default-features = false }
 
 
 vc-types   = { path = "crates/vc-types" }

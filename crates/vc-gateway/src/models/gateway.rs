@@ -224,10 +224,10 @@ impl GatewayClient {
                     continue;
                 };
 
-                if let Some(content) = choice.delta.content {
-                    if !content.is_empty() {
-                        yield StreamEvent::Token(content);
-                    }
+                if let Some(content) = choice.delta.content
+                    && !content.is_empty()
+                {
+                    yield StreamEvent::Token(content);
                 }
 
                 if let Some(tool_calls) = choice.delta.tool_calls {
@@ -238,25 +238,24 @@ impl GatewayClient {
                                 tool_ids.insert(index, id.clone());
                                 yield StreamEvent::ToolCallStart { id, name };
                             }
-                            if let Some(arguments) = function.arguments {
-                                if !arguments.is_empty() {
-                                    if let Some(existing_id) = tool_ids.get(&index) {
-                                        yield StreamEvent::ToolCallArgs {
-                                            id: existing_id.clone(),
-                                            chunk: arguments,
-                                        };
-                                    }
-                                }
+                            if let Some(arguments) = function.arguments
+                                && !arguments.is_empty()
+                                && let Some(existing_id) = tool_ids.get(&index)
+                            {
+                                yield StreamEvent::ToolCallArgs {
+                                    id: existing_id.clone(),
+                                    chunk: arguments,
+                                };
                             }
                         }
                     }
                 }
 
-                if let Some(reason) = choice.finish_reason {
-                    if reason == "tool_calls" {
-                        for (_, id) in tool_ids.drain() {
-                            yield StreamEvent::ToolCallEnd { id };
-                        }
+                if let Some(reason) = choice.finish_reason
+                    && reason == "tool_calls"
+                {
+                    for (_, id) in tool_ids.drain() {
+                        yield StreamEvent::ToolCallEnd { id };
                     }
                 }
             }
