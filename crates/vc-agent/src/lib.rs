@@ -31,6 +31,10 @@ impl Agent {
         }
     }
 
+    pub fn set_model(&mut self, model: &str) {
+        self.gateway.set_model(model);
+    }
+
     pub async fn run(
         &mut self,
         user_message: &str,

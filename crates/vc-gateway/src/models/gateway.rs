@@ -72,6 +72,7 @@ pub enum GatewayError {
 pub struct GatewayClient {
     http: reqwest::Client,
     api_key: String,
+    model: String,
 }
 
 #[derive(Serialize)]
@@ -116,15 +117,25 @@ impl GatewayClient {
     pub fn from_env() -> Result<Self, GatewayError> {
         let api_key =
             std::env::var("AI_GATEWAY_API_KEY").map_err(|_| GatewayError::MissingApiKey)?;
+        let model = std::env::var("CODELIGHT_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
         Ok(Self {
             http: reqwest::Client::new(),
             api_key,
+            model,
         })
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn set_model(&mut self, model: impl Into<String>) {
+        self.model = model.into();
     }
 
     pub async fn chat(&self, messages: &[Message]) -> Result<(String, Usage), GatewayError> {
         let request = ChatRequest {
-            model: DEFAULT_MODEL,
+            model: self.model.as_str(),
             messages,
             max_tokens: 1024,
         };
@@ -163,7 +174,7 @@ impl GatewayClient {
         tools: &[Value],
     ) -> Result<BoxStream<'static, StreamEvent>, GatewayError> {
         let request = ChatStreamRequest {
-            model: DEFAULT_MODEL,
+            model: self.model.as_str(),
             messages,
             max_tokens: 1024,
             stream: true,

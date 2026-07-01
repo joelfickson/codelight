@@ -163,6 +163,18 @@ impl App {
         self.tick = self.tick.wrapping_add(1);
     }
 
+    pub fn set_model(&mut self, model: String) {
+        self.model = model;
+    }
+
+    pub fn info(&mut self, message: &str) {
+        self.entries.push(Entry {
+            kind: Kind::Info,
+            text: message.to_string(),
+        });
+        self.follow = true;
+    }
+
     pub fn seed_demo(&mut self) {
         self.push_user("ship the dashboard spinner to a preview");
         self.entries.push(Entry {
@@ -272,6 +284,9 @@ impl App {
             label("project"),
             Line::from(Span::styled(self.project.clone(), Style::default().fg(FG))),
             Line::default(),
+            label("model"),
+            Line::from(Span::styled(self.model.clone(), Style::default().fg(MUTED))),
+            Line::default(),
             label("session"),
             Line::from(Span::styled(
                 format!("step {}/20", self.steps),
@@ -301,6 +316,9 @@ impl App {
                 "open · copy · logs",
                 Style::default().fg(ACCENT),
             )),
+            Line::default(),
+            label("model"),
+            Line::from(Span::styled(self.model.clone(), Style::default().fg(MUTED))),
         ]
     }
 
@@ -574,6 +592,16 @@ mod tests {
         assert!(text.contains("codelight"));
         assert!(text.contains("my-app"));
         assert!(text.contains("no preview yet"));
+    }
+
+    #[test]
+    fn sidebar_shows_the_model() {
+        let mut app = app();
+        let text = draw(&mut app);
+        assert!(text.contains("MODEL"));
+        assert!(text.contains("claude-sonnet-4-6"));
+        app.set_model("gpt-5".to_string());
+        assert!(draw(&mut app).contains("gpt-5"));
     }
 
     #[test]

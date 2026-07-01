@@ -27,6 +27,8 @@ struct Cli {
         help = "Seed a sample session to preview the UI without the Gateway"
     )]
     demo: bool,
+    #[arg(long, help = "Gateway model id to use, e.g. anthropic/claude-opus-4-6")]
+    model: Option<String>,
 }
 
 #[tokio::main]
@@ -38,7 +40,7 @@ async fn main() -> Result<()> {
         return check().await;
     }
 
-    run(cli.demo).await
+    run(cli.demo, cli.model).await
 }
 
 fn project_name() -> String {
@@ -51,12 +53,8 @@ fn project_name() -> String {
         .unwrap_or_else(|| "project".to_string())
 }
 
-fn model_label() -> String {
-    DEFAULT_MODEL
-        .split('/')
-        .next_back()
-        .unwrap_or(DEFAULT_MODEL)
-        .to_string()
+fn model_label(model: &str) -> String {
+    model.split('/').next_back().unwrap_or(model).to_string()
 }
 
 async fn check() -> Result<()> {
@@ -71,13 +69,17 @@ async fn check() -> Result<()> {
     Ok(())
 }
 
-async fn run(demo: bool) -> Result<()> {
-    let mut app = App::new(project_name(), model_label());
+async fn run(demo: bool, model_flag: Option<String>) -> Result<()> {
+    let model = model_flag
+        .or_else(|| std::env::var("CODELIGHT_MODEL").ok())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let mut app = App::new(project_name(), model_label(&model));
     let mut agent: Option<Agent> = if demo {
         app.seed_demo();
         None
     } else {
-        let gateway = GatewayClient::from_env()?;
+        let mut gateway = GatewayClient::from_env()?;
+        gateway.set_model(&model);
         let skills = std::sync::Arc::new(SkillRegistry::load());
         let mut tools = ToolRegistry::new();
         tools.register(Box::new(ReadFile));
@@ -130,7 +132,17 @@ async fn run(demo: bool) -> Result<()> {
                     KeyCode::Char('c') if ctrl => quit = true,
                     KeyCode::Enter => {
                         let text = app.input.value().trim().to_string();
-                        if !text.is_empty()
+                        if text == "/model" || text.starts_with("/model ") {
+                            let new_model = text.strip_prefix("/model").unwrap_or("").trim();
+                            app.input.reset();
+                            if !new_model.is_empty()
+                                && let Some(active) = agent.as_mut()
+                            {
+                                active.set_model(new_model);
+                                app.set_model(model_label(new_model));
+                                app.info(&format!("model set to {new_model}"));
+                            }
+                        } else if !text.is_empty()
                             && let Some(mut ready) = agent.take()
                         {
                             app.input.reset();
