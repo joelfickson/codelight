@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -142,6 +144,140 @@ impl Tool for ListDirectory {
     }
 }
 
+const IGNORE_DIRS: [&str; 5] = ["node_modules", ".git", "target", ".next", "dist"];
+const MAX_MATCHES: usize = 200;
+const MAX_OUTPUT_CHARS: usize = 8000;
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+
+pub struct SearchInFiles;
+
+#[async_trait]
+impl Tool for SearchInFiles {
+    fn name(&self) -> &str {
+        "search_in_files"
+    }
+
+    fn description(&self) -> &str {
+        "Search for a substring across files under a directory, recursively, skipping node_modules/.git/target/.next/dist. Returns the file, line number, and line text of each match. Use it to find where something is defined or used before editing."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string", "description": "Substring to search for" },
+                "path": { "type": "string", "description": "Directory to search; defaults to the current directory" }
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let query = args["query"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'query'"))?;
+        let root = args["path"].as_str().unwrap_or(".");
+
+        let mut stack = vec![std::path::PathBuf::from(root)];
+        let mut matches = Vec::new();
+
+        'walk: while let Some(dir) = stack.pop() {
+            let Ok(mut read) = tokio::fs::read_dir(&dir).await else {
+                continue;
+            };
+            while let Some(entry) = read.next_entry().await? {
+                let Ok(file_type) = entry.file_type().await else {
+                    continue;
+                };
+                let path = entry.path();
+
+                if file_type.is_dir() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if !IGNORE_DIRS.contains(&name.as_str()) {
+                        stack.push(path);
+                    }
+                } else if file_type.is_file()
+                    && let Ok(content) = tokio::fs::read_to_string(&path).await
+                {
+                    for (index, line) in content.lines().enumerate() {
+                        if line.contains(query) {
+                            matches.push(serde_json::json!({
+                                "file": path.to_string_lossy(),
+                                "line": index + 1,
+                                "text": line.trim(),
+                            }));
+                            if matches.len() >= MAX_MATCHES {
+                                break 'walk;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(serde_json::json!({ "count": matches.len(), "matches": matches }))
+    }
+}
+
+pub struct RunCommand;
+
+#[async_trait]
+impl Tool for RunCommand {
+    fn name(&self) -> &str {
+        "run_command"
+    }
+
+    fn description(&self) -> &str {
+        "Run a shell command (via `sh -c`) in the current directory and return its stdout, stderr, and exit code. Use for typechecking, tests, builds, linters, and git. Do NOT install dependencies, delete files, or run destructive or long-running interactive commands without the user explicitly asking."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": { "type": "string", "description": "The shell command to run" }
+            },
+            "required": ["command"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        let command = args["command"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'command'"))?;
+
+        let run = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .output();
+
+        let output = match tokio::time::timeout(COMMAND_TIMEOUT, run).await {
+            Ok(result) => result?,
+            Err(_) => {
+                return Ok(serde_json::json!({
+                    "timed_out": true,
+                    "error": "command exceeded the 120s timeout",
+                }));
+            }
+        };
+
+        Ok(serde_json::json!({
+            "exit_code": output.status.code(),
+            "stdout": cap_output(&String::from_utf8_lossy(&output.stdout)),
+            "stderr": cap_output(&String::from_utf8_lossy(&output.stderr)),
+        }))
+    }
+}
+
+fn cap_output(text: &str) -> String {
+    if text.chars().count() > MAX_OUTPUT_CHARS {
+        let head: String = text.chars().take(MAX_OUTPUT_CHARS).collect();
+        format!("{head}\n… (truncated)")
+    } else {
+        text.to_string()
+    }
+}
+
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
@@ -224,5 +360,30 @@ mod tests {
             .collect();
         assert!(names.contains(&"Cargo.toml"));
         assert!(names.contains(&"src/"));
+    }
+
+    #[tokio::test]
+    async fn searches_for_a_substring() {
+        let result = SearchInFiles
+            .execute(serde_json::json!({ "query": "ToolRegistry", "path": "src" }))
+            .await
+            .unwrap();
+        assert!(result["count"].as_u64().unwrap() >= 1);
+        let matches = result["matches"].as_array().unwrap();
+        assert!(
+            matches
+                .iter()
+                .any(|m| m["file"].as_str().unwrap().contains("lib.rs"))
+        );
+    }
+
+    #[tokio::test]
+    async fn runs_a_shell_command() {
+        let result = RunCommand
+            .execute(serde_json::json!({ "command": "echo codelight" }))
+            .await
+            .unwrap();
+        assert!(result["stdout"].as_str().unwrap().contains("codelight"));
+        assert_eq!(result["exit_code"].as_i64().unwrap(), 0);
     }
 }

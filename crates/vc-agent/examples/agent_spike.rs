@@ -2,7 +2,7 @@ use std::io::Write;
 use tokio::sync::mpsc;
 use vc_agent::Agent;
 use vc_gateway::GatewayClient;
-use vc_tools::{ListDirectory, ReadFile, ToolRegistry, WriteFile};
+use vc_tools::{ListDirectory, ReadFile, RunCommand, SearchInFiles, ToolRegistry, WriteFile};
 use vc_types::AgentEvent;
 
 #[tokio::main]
@@ -15,12 +15,10 @@ async fn main() -> anyhow::Result<()> {
     tools.register(Box::new(ReadFile));
     tools.register(Box::new(WriteFile));
     tools.register(Box::new(ListDirectory));
+    tools.register(Box::new(SearchInFiles));
+    tools.register(Box::new(RunCommand));
 
     let mut agent = Agent::new(gateway, tools);
-
-    let target = std::env::temp_dir().join("codelight_hello.txt");
-    let target = target.to_string_lossy().into_owned();
-    std::fs::remove_file(&target).ok();
 
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
 
@@ -44,16 +42,13 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let prompt = format!(
-        "Write a file at {target} containing exactly the line 'hello from codelight', then tell me you are done."
-    );
-    agent.run(&prompt, tx).await?;
+    agent
+        .run(
+            "Run the shell command `git log --oneline -1` and tell me the most recent commit.",
+            tx,
+        )
+        .await?;
 
     printer.await?;
-
-    match std::fs::read_to_string(&target) {
-        Ok(contents) => println!("\n[verify] file exists, contents: {contents:?}"),
-        Err(err) => println!("\n[verify] file missing: {err}"),
-    }
     Ok(())
 }
