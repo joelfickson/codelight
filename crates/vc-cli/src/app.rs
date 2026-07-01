@@ -17,8 +17,10 @@ const MUTED: Color = Color::Rgb(0x76, 0x7a, 0x86);
 const FAINT: Color = Color::Rgb(0x3c, 0x41, 0x4e);
 const URL: Color = Color::Rgb(0x93, 0xa7, 0xff);
 const CODE: Color = Color::Rgb(0xa9, 0xb6, 0xff);
+const LINE: Color = Color::Rgb(0x2b, 0x30, 0x3d);
 
 const RAIL_WIDTH: u16 = 34;
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 enum Kind {
     User,
@@ -101,6 +103,7 @@ pub struct App {
     pub thinking: bool,
     scroll: u16,
     follow: bool,
+    tick: usize,
 }
 
 impl App {
@@ -117,6 +120,7 @@ impl App {
             thinking: false,
             scroll: 0,
             follow: true,
+            tick: 0,
         }
     }
 
@@ -188,6 +192,10 @@ impl App {
         self.scroll = self.scroll.saturating_add(1);
     }
 
+    pub fn tick(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
+    }
+
     pub fn seed_demo(&mut self) {
         self.push_user("ship the dashboard spinner to a preview");
         self.entries.push(Entry {
@@ -222,7 +230,7 @@ impl App {
         let root = Layout::vertical([
             Constraint::Length(2),
             Constraint::Min(1),
-            Constraint::Length(1),
+            Constraint::Length(3),
             Constraint::Length(1),
         ])
         .split(frame.area());
@@ -350,31 +358,49 @@ impl App {
         } else {
             spans.push(Span::styled(value.to_string(), Style::default().fg(FG)));
         }
+        let border = if self.thinking { ACCENT } else { LINE };
         frame.render_widget(
-            Paragraph::new(Line::from(spans))
-                .block(Block::default().padding(Padding::new(1, 0, 0, 0))),
+            Paragraph::new(Line::from(spans)).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border))
+                    .padding(Padding::horizontal(1)),
+            ),
             area,
         );
-        let cursor_x = area.x + 1 + 2 + self.input.visual_cursor() as u16;
-        frame.set_cursor_position((cursor_x, area.y));
+        let cursor_x = area.x + 4 + self.input.visual_cursor() as u16;
+        frame.set_cursor_position((cursor_x, area.y + 1));
     }
 
     fn render_status(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
-        let (dot, word, color) = if self.thinking {
-            ("●", "thinking", WARN)
+        let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(26)]).split(area);
+
+        let (glyph, word, color) = if self.thinking {
+            (SPINNER[self.tick % SPINNER.len()], "working", WARN)
         } else {
             ("●", "ready", OK)
         };
-        let line = Line::from(vec![
-            Span::styled(dot, Style::default().fg(color)),
+        let left = Line::from(vec![
+            Span::styled(glyph, Style::default().fg(color)),
             Span::styled(
                 format!(" {word} · step {}/20 · {}", self.steps, self.project),
                 Style::default().fg(MUTED),
             ),
         ]);
         frame.render_widget(
-            Paragraph::new(line).block(Block::default().padding(Padding::new(1, 0, 0, 0))),
-            area,
+            Paragraph::new(left).block(Block::default().padding(Padding::new(1, 0, 0, 0))),
+            cols[0],
+        );
+
+        let hints = Line::from(Span::styled(
+            "enter send · esc quit",
+            Style::default().fg(FAINT),
+        ));
+        frame.render_widget(
+            Paragraph::new(hints)
+                .alignment(Alignment::Right)
+                .block(Block::default().padding(Padding::new(0, 1, 0, 0))),
+            cols[1],
         );
     }
 }

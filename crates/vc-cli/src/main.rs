@@ -105,6 +105,7 @@ async fn run(demo: bool) -> Result<()> {
     let mut terminal = ratatui::init();
     let mut running: Option<JoinHandle<Agent>> = None;
     let mut quit = false;
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(100));
 
     while !quit {
         terminal.draw(|frame| app.render(frame))?;
@@ -151,6 +152,9 @@ async fn run(demo: bool) -> Result<()> {
                 {
                     agent = Some(reclaimed);
                 }
+            }
+            _ = ticker.tick() => {
+                app.tick();
             }
         }
     }

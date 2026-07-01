@@ -1,7 +1,8 @@
 # Codelight
 
-Codelight is fundamentally a **coding agent** that is **specialized for Vercel** and works
-**exclusively through the Vercel AI Gateway**. It is a terminal TUI (Rust, 8-crate Cargo
+Codelight is fundamentally a **general-purpose coding agent** that **prefers Vercel
+technologies** (Next.js, the Vercel AI SDK, Vercel platform conventions) and routes **all
+inference through the Vercel AI Gateway**. It is a terminal TUI (Rust, 8-crate Cargo
 workspace) that writes code, type-checks, deploys previews, and inspects logs in one session.
 The bet: a session ends with a live preview URL, not just a saved file.
 
