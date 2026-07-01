@@ -6,6 +6,8 @@ use vc_gateway::GatewayClient;
 use vc_tools::ToolRegistry;
 use vc_types::{AgentEvent, Message, StreamEvent, ToolCall};
 
+const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
+
 pub struct Agent {
     gateway: GatewayClient,
     tools: ToolRegistry,
@@ -18,8 +20,8 @@ impl Agent {
         Self {
             gateway,
             tools,
-            history: Vec::new(),
-            max_steps: 3,
+            history: vec![Message::system(SYSTEM_PROMPT)],
+            max_steps: 20,
         }
     }
 

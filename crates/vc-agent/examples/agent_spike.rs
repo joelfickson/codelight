@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
 
     agent
         .run(
-            "Run the shell command `git log --oneline -1` and tell me the most recent commit.",
+            "How does loading.tsx work in the Next.js App Router? Search the docs and cite what you find.",
             tx,
         )
         .await?;
