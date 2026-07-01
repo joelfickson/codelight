@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tui_input::InputRequest;
 use vc_agent::Agent;
-use vc_gateway::GatewayClient;
+use vc_gateway::{DEFAULT_MODEL, GatewayClient};
 use vc_tools::{ReadFile, ToolRegistry};
 use vc_types::{AgentEvent, Message};
 
@@ -18,6 +18,11 @@ use app::App;
 struct Cli {
     #[arg(long, help = "Validate the Gateway connection and exit")]
     check: bool,
+    #[arg(
+        long,
+        help = "Seed a sample session to preview the UI without the Gateway"
+    )]
+    demo: bool,
 }
 
 #[tokio::main]
@@ -29,7 +34,25 @@ async fn main() -> Result<()> {
         return check().await;
     }
 
-    run().await
+    run(cli.demo).await
+}
+
+fn project_name() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "project".to_string())
+}
+
+fn model_label() -> String {
+    DEFAULT_MODEL
+        .split('/')
+        .next_back()
+        .unwrap_or(DEFAULT_MODEL)
+        .to_string()
 }
 
 async fn check() -> Result<()> {
@@ -44,11 +67,17 @@ async fn check() -> Result<()> {
     Ok(())
 }
 
-async fn run() -> Result<()> {
-    let gateway = GatewayClient::from_env()?;
-    let mut tools = ToolRegistry::new();
-    tools.register(Box::new(ReadFile));
-    let mut agent: Option<Agent> = Some(Agent::new(gateway, tools));
+async fn run(demo: bool) -> Result<()> {
+    let mut app = App::new(project_name(), model_label());
+    let mut agent: Option<Agent> = if demo {
+        app.seed_demo();
+        None
+    } else {
+        let gateway = GatewayClient::from_env()?;
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(ReadFile));
+        Some(Agent::new(gateway, tools))
+    };
 
     let (events_tx, mut events_rx) = mpsc::channel::<AgentEvent>(256);
     let (input_tx, mut input_rx) = mpsc::channel::<Event>(64);
@@ -62,7 +91,6 @@ async fn run() -> Result<()> {
     });
 
     let mut terminal = ratatui::init();
-    let mut app = App::new();
     let mut running: Option<JoinHandle<Agent>> = None;
     let mut quit = false;
 
