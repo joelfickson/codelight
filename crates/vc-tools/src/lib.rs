@@ -58,6 +58,35 @@ impl Tool for ReadFile {
     }
 }
 
+#[derive(Default)]
+pub struct ToolRegistry {
+    tools: Vec<Box<dyn Tool>>,
+}
+
+impl ToolRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&mut self, tool: Box<dyn Tool>) {
+        self.tools.push(tool);
+    }
+
+    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
+        self.tools
+            .iter()
+            .find(|tool| tool.name() == name)
+            .map(|tool| tool.as_ref())
+    }
+
+    pub fn definitions(&self) -> Vec<Value> {
+        self.tools
+            .iter()
+            .map(|tool| tool.to_api_definitions())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

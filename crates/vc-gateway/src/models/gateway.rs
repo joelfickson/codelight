@@ -5,6 +5,7 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use vc_types::{Message, StreamEvent, Usage};
 
 pub const GATEWAY_URL: &str = "https://ai-gateway.vercel.sh/v1/chat/completions";
@@ -17,6 +18,8 @@ struct ChatStreamRequest<'a> {
     max_tokens: u32,
     stream: bool,
     stream_options: StreamOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<&'a [Value]>,
 }
 
 #[derive(Serialize)]
@@ -157,6 +160,7 @@ impl GatewayClient {
     pub async fn chat_stream(
         &self,
         messages: &[Message],
+        tools: &[Value],
     ) -> Result<BoxStream<'static, StreamEvent>, GatewayError> {
         let request = ChatStreamRequest {
             model: DEFAULT_MODEL,
@@ -166,6 +170,7 @@ impl GatewayClient {
             stream_options: StreamOptions {
                 include_usage: true,
             },
+            tools: if tools.is_empty() { None } else { Some(tools) },
         };
 
         let response = self
