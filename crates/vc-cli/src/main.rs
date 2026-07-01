@@ -8,7 +8,10 @@ use tokio::task::JoinHandle;
 use tui_input::InputRequest;
 use vc_agent::Agent;
 use vc_gateway::{DEFAULT_MODEL, GatewayClient};
-use vc_tools::{ListDirectory, ReadFile, RunCommand, SearchInFiles, ToolRegistry, WriteFile};
+use vc_tools::{
+    DeleteFile, EditFile, ListDirectory, MoveFile, ReadFile, RunCommand, SearchDocs, SearchInFiles,
+    ToolRegistry, WebFetch, WriteFile,
+};
 use vc_types::{AgentEvent, Message};
 
 use app::App;
@@ -77,9 +80,14 @@ async fn run(demo: bool) -> Result<()> {
         let mut tools = ToolRegistry::new();
         tools.register(Box::new(ReadFile));
         tools.register(Box::new(WriteFile));
+        tools.register(Box::new(EditFile));
+        tools.register(Box::new(DeleteFile));
+        tools.register(Box::new(MoveFile));
         tools.register(Box::new(ListDirectory));
         tools.register(Box::new(SearchInFiles));
+        tools.register(Box::new(SearchDocs));
         tools.register(Box::new(RunCommand));
+        tools.register(Box::new(WebFetch));
         Some(Agent::new(gateway, tools))
     };
 

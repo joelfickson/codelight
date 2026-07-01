@@ -2,7 +2,10 @@ use std::io::Write;
 use tokio::sync::mpsc;
 use vc_agent::Agent;
 use vc_gateway::GatewayClient;
-use vc_tools::{ListDirectory, ReadFile, RunCommand, SearchInFiles, ToolRegistry, WriteFile};
+use vc_tools::{
+    DeleteFile, EditFile, ListDirectory, MoveFile, ReadFile, RunCommand, SearchDocs, SearchInFiles,
+    ToolRegistry, WebFetch, WriteFile,
+};
 use vc_types::AgentEvent;
 
 #[tokio::main]
@@ -14,9 +17,14 @@ async fn main() -> anyhow::Result<()> {
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(ReadFile));
     tools.register(Box::new(WriteFile));
+    tools.register(Box::new(EditFile));
+    tools.register(Box::new(DeleteFile));
+    tools.register(Box::new(MoveFile));
     tools.register(Box::new(ListDirectory));
     tools.register(Box::new(SearchInFiles));
+    tools.register(Box::new(SearchDocs));
     tools.register(Box::new(RunCommand));
+    tools.register(Box::new(WebFetch));
 
     let mut agent = Agent::new(gateway, tools);
 
