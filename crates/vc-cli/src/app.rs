@@ -16,6 +16,7 @@ const FG: Color = Color::Rgb(0xe9, 0xe9, 0xee);
 const MUTED: Color = Color::Rgb(0x76, 0x7a, 0x86);
 const FAINT: Color = Color::Rgb(0x3c, 0x41, 0x4e);
 const URL: Color = Color::Rgb(0x93, 0xa7, 0xff);
+const CODE: Color = Color::Rgb(0xa9, 0xb6, 0xff);
 
 const RAIL_WIDTH: u16 = 34;
 
@@ -47,12 +48,7 @@ impl Entry {
                     "codelight",
                     Style::default().fg(MUTED),
                 ))];
-                for line in self.text.split('\n') {
-                    lines.push(Line::from(Span::styled(
-                        line.to_string(),
-                        Style::default().fg(FG),
-                    )));
-                }
+                lines.extend(render_markdown(&self.text));
                 lines.push(Line::default());
                 lines
             }
@@ -397,6 +393,146 @@ fn step_done(text: &str) -> Line<'static> {
     ])
 }
 
+fn render_markdown(text: &str) -> Vec<Line<'static>> {
+    let base = Style::default().fg(FG);
+    let mut lines = Vec::new();
+    let mut in_code = false;
+
+    for raw in text.split('\n') {
+        let stripped = raw.trim_start();
+
+        if stripped.starts_with("```") {
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            lines.push(Line::from(vec![
+                Span::styled("  ", base),
+                Span::styled(raw.to_string(), Style::default().fg(CODE)),
+            ]));
+            continue;
+        }
+        if stripped.is_empty() {
+            lines.push(Line::default());
+            continue;
+        }
+        if is_rule(stripped) {
+            lines.push(Line::from(Span::styled(
+                "─".repeat(26),
+                Style::default().fg(FAINT),
+            )));
+            continue;
+        }
+        if let Some((level, content)) = heading(stripped) {
+            let color = if level == 1 { ACCENT } else { FG };
+            lines.push(Line::from(Span::styled(
+                content,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )));
+            continue;
+        }
+        if let Some(rest) = bullet(stripped) {
+            let mut spans = vec![Span::styled("  • ", Style::default().fg(MUTED))];
+            spans.extend(inline_spans(rest, base));
+            lines.push(Line::from(spans));
+            continue;
+        }
+        if let Some((marker, rest)) = numbered(stripped) {
+            let mut spans = vec![Span::styled(
+                format!("  {marker} "),
+                Style::default().fg(MUTED),
+            )];
+            spans.extend(inline_spans(rest, base));
+            lines.push(Line::from(spans));
+            continue;
+        }
+
+        lines.push(Line::from(inline_spans(stripped, base)));
+    }
+
+    lines
+}
+
+fn is_rule(text: &str) -> bool {
+    let text = text.trim();
+    text.len() >= 3
+        && (text.chars().all(|c| c == '-')
+            || text.chars().all(|c| c == '*')
+            || text.chars().all(|c| c == '_'))
+}
+
+fn heading(text: &str) -> Option<(usize, String)> {
+    let hashes = text.chars().take_while(|c| *c == '#').count();
+    if (1..=6).contains(&hashes) {
+        let rest = &text[hashes..];
+        if rest.is_empty() || rest.starts_with(' ') {
+            return Some((hashes, rest.trim().to_string()));
+        }
+    }
+    None
+}
+
+fn bullet(text: &str) -> Option<&str> {
+    ["- ", "* ", "+ "]
+        .into_iter()
+        .find_map(|marker| text.strip_prefix(marker))
+}
+
+fn numbered(text: &str) -> Option<(String, &str)> {
+    let digits: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    text[digits.len()..]
+        .strip_prefix(". ")
+        .map(|rest| (format!("{digits}."), rest))
+}
+
+fn inline_spans(text: &str, base: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut plain_start = 0;
+    let mut i = 0;
+
+    while i < text.len() {
+        if text[i..].starts_with("**") {
+            if let Some(rel) = text[i + 2..].find("**") {
+                if plain_start < i {
+                    spans.push(Span::styled(text[plain_start..i].to_string(), base));
+                }
+                spans.push(Span::styled(
+                    text[i + 2..i + 2 + rel].to_string(),
+                    base.add_modifier(Modifier::BOLD),
+                ));
+                i = i + 2 + rel + 2;
+                plain_start = i;
+                continue;
+            }
+        } else if text.as_bytes()[i] == b'`'
+            && let Some(rel) = text[i + 1..].find('`')
+        {
+            if plain_start < i {
+                spans.push(Span::styled(text[plain_start..i].to_string(), base));
+            }
+            spans.push(Span::styled(
+                text[i + 1..i + 1 + rel].to_string(),
+                Style::default().fg(CODE),
+            ));
+            i = i + 1 + rel + 1;
+            plain_start = i;
+            continue;
+        }
+        i += text[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+    }
+
+    if plain_start < text.len() {
+        spans.push(Span::styled(text[plain_start..].to_string(), base));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(text.to_string(), base));
+    }
+    spans
+}
+
 fn wrapped_rows(line: &Line, width: u16) -> u16 {
     let content = line.width() as u16;
     if width == 0 {
@@ -488,5 +624,37 @@ mod tests {
         });
         let text = draw(&mut app);
         assert!(text.contains("✗"));
+    }
+
+    #[test]
+    fn renders_markdown_headings_bullets_and_inline_code() {
+        let mut app = app();
+        app.push_user("q");
+        app.apply(AgentEvent::Token(
+            "## Setup\n- install `next`\n- run it\n\n**Done** now\n\n---".to_string(),
+        ));
+        app.apply(AgentEvent::Done);
+
+        let text = draw(&mut app);
+        assert!(text.contains("Setup"));
+        assert!(!text.contains("##"));
+        assert!(text.contains("•"));
+        assert!(!text.contains('`'));
+        assert!(!text.contains("**"));
+        assert!(text.contains("next"));
+        assert!(text.contains("Done"));
+        assert!(text.contains("─"));
+    }
+
+    #[test]
+    fn renders_fenced_code_block_without_fences() {
+        let mut app = app();
+        app.push_user("q");
+        app.apply(AgentEvent::Token("```tsx\nconst x = 1\n```".to_string()));
+        app.apply(AgentEvent::Done);
+
+        let text = draw(&mut app);
+        assert!(text.contains("const x = 1"));
+        assert!(!text.contains("```"));
     }
 }
