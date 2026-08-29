@@ -1,5 +1,6 @@
 use anyhow::Result;
 use futures::StreamExt;
+use futures::stream::BoxStream;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use vc_gateway::GatewayClient;
@@ -8,17 +9,51 @@ use vc_types::{AgentEvent, Message, StreamEvent, ToolCall};
 
 const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 
-pub struct Agent {
-    gateway: GatewayClient,
+#[async_trait::async_trait]
+pub trait ChatBackend: Send + Sync {
+    async fn chat_stream(
+        &self,
+        messages: &[Message],
+        tools: &[Value],
+    ) -> Result<BoxStream<'static, StreamEvent>>;
+}
+
+#[async_trait::async_trait]
+impl ChatBackend for GatewayClient {
+    async fn chat_stream(
+        &self,
+        messages: &[Message],
+        tools: &[Value],
+    ) -> Result<BoxStream<'static, StreamEvent>> {
+        Ok(GatewayClient::chat_stream(self, messages, tools).await?)
+    }
+}
+
+pub struct Agent<B: ChatBackend = GatewayClient> {
+    backend: B,
     tools: ToolRegistry,
     history: Vec<Message>,
     max_steps: usize,
 }
 
-impl Agent {
+impl Agent<GatewayClient> {
     pub fn new(gateway: GatewayClient, tools: ToolRegistry) -> Self {
+        Self::with_backend(gateway, tools)
+    }
+
+    pub fn set_model(&mut self, model: &str) {
+        self.backend.set_model(model);
+    }
+
+    pub fn gateway_client(&self) -> GatewayClient {
+        self.backend.clone()
+    }
+}
+
+impl<B: ChatBackend> Agent<B> {
+    pub fn with_backend(backend: B, tools: ToolRegistry) -> Self {
         Self {
-            gateway,
+            backend,
             tools,
             history: vec![Message::system(SYSTEM_PROMPT)],
             max_steps: 20,
@@ -31,14 +66,6 @@ impl Agent {
         }
     }
 
-    pub fn set_model(&mut self, model: &str) {
-        self.gateway.set_model(model);
-    }
-
-    pub fn gateway_client(&self) -> GatewayClient {
-        self.gateway.clone()
-    }
-
     pub async fn run(
         &mut self,
         user_message: &str,
@@ -49,7 +76,7 @@ impl Agent {
         for _ in 0..self.max_steps {
             let definitions = self.tools.definitions();
             let mut stream = self
-                .gateway
+                .backend
                 .chat_stream(&self.history, &definitions)
                 .await?;
 
@@ -166,5 +193,81 @@ fn summarize(call: &ToolCall) -> String {
             format!("{} {}", call.name, short)
         }
         None => call.name.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use vc_tools::ToolRegistry;
+
+    pub struct StubBackend {
+        turns: Mutex<VecDeque<Vec<StreamEvent>>>,
+        pub seen: Mutex<Vec<Vec<Message>>>,
+    }
+
+    impl StubBackend {
+        pub fn new(turns: Vec<Vec<StreamEvent>>) -> Self {
+            Self {
+                turns: Mutex::new(turns.into()),
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChatBackend for StubBackend {
+        async fn chat_stream(
+            &self,
+            messages: &[Message],
+            _tools: &[Value],
+        ) -> Result<futures::stream::BoxStream<'static, StreamEvent>> {
+            self.seen.lock().unwrap().push(messages.to_vec());
+            let events = self
+                .turns
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| vec![StreamEvent::Error("stub exhausted".into())]);
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    fn done() -> StreamEvent {
+        StreamEvent::Done {
+            usage: vc_types::Usage::default(),
+        }
+    }
+
+    async fn drain(mut rx: mpsc::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+        let mut collected = Vec::new();
+        while let Some(event) = rx.recv().await {
+            collected.push(event);
+        }
+        collected
+    }
+
+    #[tokio::test]
+    async fn plain_answer_streams_tokens_and_finishes() {
+        let backend = StubBackend::new(vec![vec![
+            StreamEvent::Token("hi".into()),
+            StreamEvent::Token(" there".into()),
+            done(),
+        ]]);
+        let mut agent = Agent::with_backend(backend, ToolRegistry::new());
+        let (tx, rx) = mpsc::channel(64);
+        agent.run("hello", tx).await.unwrap();
+        let events = drain(rx).await;
+        assert!(matches!(events.last(), Some(AgentEvent::Done)));
+        let tokens: String = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Token(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tokens, "hi there");
     }
 }
