@@ -42,10 +42,14 @@ New module in `vc-tools`: `PermissionPolicy`.
   allow = ["cargo *", "git push origin *"]
   ```
 
-- Matching is prefix-with-trailing-`*` only. `cargo *` matches any command
-  whose first token is `cargo`. A pattern without `*` must match the full
-  command exactly after whitespace normalization. No regex, no globbing
+- Matching is token-based. A trailing `*` matches zero or more additional
+  tokens: `cargo *` matches `cargo` and `cargo test --workspace`. A pattern
+  without `*` must match the command token-for-token. No regex, no globbing
   elsewhere in the pattern.
+- Commands containing shell metacharacters (`;`, `|`, `&`, backtick, `$`,
+  `(`, `)`, `<`, `>`) never auto-match any pattern, builtin or user. This
+  closes prefix injection such as `git status; rm -rf /`; the user can still
+  approve such commands interactively.
 - `PermissionPolicy::allows(command: &str) -> bool` checks built-ins then user
   patterns.
 - `PermissionPolicy::persist_allow(pattern: &str)` appends to the
@@ -116,8 +120,9 @@ fn approval_request(&self, args: &Value, policy: &PermissionPolicy) -> Option<Ap
   `overwrite <dest>`, no suggested pattern.
 - All other tools: default `None`.
 
-The policy is owned by the `ToolRegistry` (or passed alongside it) so both the
-gating check and `persist_allow` share one instance.
+The policy is owned by the `Agent` behind a `std::sync::Mutex` (guards dropped
+before any await) so the gating check and `persist_allow` share one instance;
+tools receive `&PermissionPolicy` per call.
 
 ## 4. Verify nudge
 
@@ -190,8 +195,9 @@ abstraction.
 
 ## Error handling
 
-- Malformed `.codelight.toml`: log a warning event (`AgentEvent::Info`), treat
-  as empty allowlist. Never fail startup over it.
+- Malformed `.codelight.toml`: treat as an empty allowlist. Never fail
+  startup over it. (The policy loads before the event channel exists, so no
+  warning event is emitted.)
 - `persist_allow` write failure: the in-memory allow still applies for the
   session; surface an `Info` event about the failed write.
 - Approver channel dropped (TUI shutting down): treat as `Deny`.
