@@ -140,6 +140,20 @@ pub enum AgentEvent {
     Done,
 }
 
+#[derive(Debug, Clone)]
+pub struct ApprovalRequest {
+    pub tool: String,
+    pub action: String,
+    pub suggested_pattern: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    AllowOnce,
+    AllowAlways,
+    Deny,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
