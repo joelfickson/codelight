@@ -3,15 +3,16 @@ mod app;
 use anyhow::Result;
 use clap::Parser;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tui_input::InputRequest;
-use vc_agent::Agent;
+use vc_agent::{Agent, YesApprover};
 use vc_gateway::{DEFAULT_MODEL, GatewayClient};
 use vc_skills::{AddSkill, LoadSkill, ReadSkillResource, SearchSkills, SkillRegistry};
 use vc_tools::{
-    DeleteFile, EditFile, ListDirectory, MoveFile, ReadFile, RunCommand, SearchDocs, SearchInFiles,
-    ToolRegistry, WebFetch, WriteFile,
+    DeleteFile, EditFile, ListDirectory, MoveFile, PermissionPolicy, ReadFile, RunCommand,
+    SearchDocs, SearchInFiles, ToolRegistry, WebFetch, WriteFile,
 };
 use vc_types::{AgentEvent, Message};
 
@@ -117,7 +118,8 @@ async fn run(demo: bool, model_flag: Option<String>) -> Result<()> {
         tools.register(Box::new(ReadSkillResource::new(skills.clone())));
         tools.register(Box::new(SearchSkills));
         tools.register(Box::new(AddSkill));
-        let mut agent = Agent::new(gateway, tools);
+        let policy = PermissionPolicy::load(".codelight.toml");
+        let mut agent = Agent::new(gateway, tools, Arc::new(YesApprover), policy);
         agent.set_skills(&skills.advertise());
         Some(agent)
     };

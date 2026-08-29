@@ -2,10 +2,12 @@ use anyhow::Result;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::Value;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use vc_gateway::GatewayClient;
+use vc_tools::PermissionPolicy;
 use vc_tools::ToolRegistry;
-use vc_types::{AgentEvent, Message, StreamEvent, ToolCall};
+use vc_types::{AgentEvent, ApprovalRequest, Decision, Message, StreamEvent, ToolCall};
 
 const SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
 
@@ -16,6 +18,20 @@ pub trait ChatBackend: Send + Sync {
         messages: &[Message],
         tools: &[Value],
     ) -> Result<BoxStream<'static, StreamEvent>>;
+}
+
+#[async_trait::async_trait]
+pub trait Approver: Send + Sync {
+    async fn approve(&self, request: ApprovalRequest) -> Decision;
+}
+
+pub struct YesApprover;
+
+#[async_trait::async_trait]
+impl Approver for YesApprover {
+    async fn approve(&self, _request: ApprovalRequest) -> Decision {
+        Decision::AllowOnce
+    }
 }
 
 #[async_trait::async_trait]
@@ -34,11 +50,18 @@ pub struct Agent<B: ChatBackend = GatewayClient> {
     tools: ToolRegistry,
     history: Vec<Message>,
     max_steps: usize,
+    approver: Arc<dyn Approver>,
+    policy: Mutex<PermissionPolicy>,
 }
 
 impl Agent<GatewayClient> {
-    pub fn new(gateway: GatewayClient, tools: ToolRegistry) -> Self {
-        Self::with_backend(gateway, tools)
+    pub fn new(
+        gateway: GatewayClient,
+        tools: ToolRegistry,
+        approver: Arc<dyn Approver>,
+        policy: PermissionPolicy,
+    ) -> Self {
+        Self::with_backend(gateway, tools, approver, policy)
     }
 
     pub fn set_model(&mut self, model: &str) {
@@ -51,12 +74,19 @@ impl Agent<GatewayClient> {
 }
 
 impl<B: ChatBackend> Agent<B> {
-    pub fn with_backend(backend: B, tools: ToolRegistry) -> Self {
+    pub fn with_backend(
+        backend: B,
+        tools: ToolRegistry,
+        approver: Arc<dyn Approver>,
+        policy: PermissionPolicy,
+    ) -> Self {
         Self {
             backend,
             tools,
             history: vec![Message::system(SYSTEM_PROMPT)],
             max_steps: 20,
+            approver,
+            policy: Mutex::new(policy),
         }
     }
 
@@ -128,7 +158,7 @@ impl<B: ChatBackend> Agent<B> {
                     })
                     .await
                     .ok();
-                let result = self.execute(&call, &events).await;
+                let (result, _executed_ok) = self.execute(&call, &events).await;
                 self.history.push(Message::tool_result(call.id, result));
             }
         }
@@ -143,15 +173,66 @@ impl<B: ChatBackend> Agent<B> {
         Ok(())
     }
 
-    async fn execute(&self, call: &ToolCall, events: &mpsc::Sender<AgentEvent>) -> String {
+    async fn execute(&self, call: &ToolCall, events: &mpsc::Sender<AgentEvent>) -> (String, bool) {
         let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
 
-        let outcome = match self.tools.get(&call.name) {
-            Some(tool) => tool.execute(args).await,
-            None => Err(anyhow::anyhow!("unknown tool: {}", call.name)),
+        let Some(tool) = self.tools.get(&call.name) else {
+            events
+                .send(AgentEvent::ToolFinished {
+                    id: call.id.clone(),
+                    ok: false,
+                })
+                .await
+                .ok();
+            return (
+                serde_json::json!({ "error": format!("unknown tool: {}", call.name) }).to_string(),
+                false,
+            );
         };
 
-        match outcome {
+        let request = {
+            let policy = self.policy.lock().unwrap();
+            tool.approval_request(&args, &policy)
+        };
+
+        if let Some(request) = request {
+            let pattern = request.suggested_pattern.clone();
+            match self.approver.approve(request).await {
+                Decision::Deny => {
+                    events
+                        .send(AgentEvent::ToolFinished {
+                            id: call.id.clone(),
+                            ok: false,
+                        })
+                        .await
+                        .ok();
+                    return (
+                        serde_json::json!({ "error": "the user declined to allow this action" })
+                            .to_string(),
+                        false,
+                    );
+                }
+                Decision::AllowAlways => {
+                    if let Some(pattern) = pattern {
+                        let persist_error = {
+                            let mut policy = self.policy.lock().unwrap();
+                            policy.persist_allow(&pattern).err()
+                        };
+                        if let Some(err) = persist_error {
+                            events
+                                .send(AgentEvent::Info(format!(
+                                    "could not persist allow pattern: {err}"
+                                )))
+                                .await
+                                .ok();
+                        }
+                    }
+                }
+                Decision::AllowOnce => {}
+            }
+        }
+
+        match tool.execute(args).await {
             Ok(value) => {
                 events
                     .send(AgentEvent::ToolFinished {
@@ -160,7 +241,7 @@ impl<B: ChatBackend> Agent<B> {
                     })
                     .await
                     .ok();
-                value.to_string()
+                (value.to_string(), true)
             }
             Err(err) => {
                 events
@@ -170,7 +251,10 @@ impl<B: ChatBackend> Agent<B> {
                     })
                     .await
                     .ok();
-                serde_json::json!({ "error": err.to_string() }).to_string()
+                (
+                    serde_json::json!({ "error": err.to_string() }).to_string(),
+                    false,
+                )
             }
         }
     }
@@ -200,8 +284,9 @@ fn summarize(call: &ToolCall) -> String {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    use std::sync::Arc;
     use std::sync::Mutex;
-    use vc_tools::ToolRegistry;
+    use vc_tools::{PermissionPolicy, RunCommand, ToolRegistry};
 
     pub struct StubBackend {
         turns: Mutex<VecDeque<Vec<StreamEvent>>>,
@@ -256,7 +341,12 @@ mod tests {
             StreamEvent::Token(" there".into()),
             done(),
         ]]);
-        let mut agent = Agent::with_backend(backend, ToolRegistry::new());
+        let mut agent = Agent::with_backend(
+            backend,
+            ToolRegistry::new(),
+            Arc::new(YesApprover),
+            empty_policy("plain"),
+        );
         let (tx, rx) = mpsc::channel(64);
         agent.run("hello", tx).await.unwrap();
         let events = drain(rx).await;
@@ -269,5 +359,109 @@ mod tests {
             })
             .collect();
         assert_eq!(tokens, "hi there");
+    }
+
+    struct ScriptedApprover {
+        decision: Decision,
+        asked: Mutex<Vec<ApprovalRequest>>,
+    }
+
+    impl ScriptedApprover {
+        fn new(decision: Decision) -> Self {
+            Self {
+                decision,
+                asked: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Approver for ScriptedApprover {
+        async fn approve(&self, request: ApprovalRequest) -> Decision {
+            self.asked.lock().unwrap().push(request);
+            self.decision
+        }
+    }
+
+    fn empty_policy(name: &str) -> PermissionPolicy {
+        PermissionPolicy::load(std::env::temp_dir().join(format!("vc_agent_{name}.toml")))
+    }
+
+    fn tool_call_turn(name: &str, arguments: &str) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::ToolCallStart {
+                id: "call_1".into(),
+                name: name.into(),
+            },
+            StreamEvent::ToolCallArgs {
+                id: "call_1".into(),
+                chunk: arguments.into(),
+            },
+            StreamEvent::ToolCallEnd {
+                id: "call_1".into(),
+            },
+            done(),
+        ]
+    }
+
+    fn answer_turn(text: &str) -> Vec<StreamEvent> {
+        vec![StreamEvent::Token(text.into()), done()]
+    }
+
+    #[tokio::test]
+    async fn denied_command_is_not_executed_and_model_sees_decline() {
+        let backend = StubBackend::new(vec![
+            tool_call_turn("run_command", r#"{"command": "rm -rf build"}"#),
+            answer_turn("understood"),
+        ]);
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(RunCommand));
+        let approver = Arc::new(ScriptedApprover::new(Decision::Deny));
+        let mut agent = Agent::with_backend(backend, tools, approver.clone(), empty_policy("deny"));
+        let (tx, rx) = mpsc::channel(64);
+        agent.run("clean the build dir", tx).await.unwrap();
+        drain(rx).await;
+        assert_eq!(approver.asked.lock().unwrap().len(), 1);
+        let seen = agent.backend.seen.lock().unwrap();
+        let second_turn = &seen[1];
+        let declined = second_turn.iter().any(|m| m.content.contains("declined"));
+        assert!(declined);
+    }
+
+    #[tokio::test]
+    async fn allowed_policy_command_skips_the_approver() {
+        let backend = StubBackend::new(vec![
+            tool_call_turn("run_command", r#"{"command": "git status"}"#),
+            answer_turn("clean tree"),
+        ]);
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(RunCommand));
+        let approver = Arc::new(ScriptedApprover::new(Decision::Deny));
+        let mut agent = Agent::with_backend(backend, tools, approver.clone(), empty_policy("skip"));
+        let (tx, rx) = mpsc::channel(64);
+        agent.run("check git", tx).await.unwrap();
+        drain(rx).await;
+        assert!(approver.asked.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn allow_once_executes_the_command() {
+        let backend = StubBackend::new(vec![
+            tool_call_turn("run_command", r#"{"command": "echo approved-run"}"#),
+            answer_turn("done"),
+        ]);
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(RunCommand));
+        let approver = Arc::new(ScriptedApprover::new(Decision::AllowOnce));
+        let mut agent = Agent::with_backend(backend, tools, approver, empty_policy("once"));
+        let (tx, rx) = mpsc::channel(64);
+        agent.run("say hi", tx).await.unwrap();
+        drain(rx).await;
+        let seen = agent.backend.seen.lock().unwrap();
+        let second_turn = &seen[1];
+        let executed = second_turn
+            .iter()
+            .any(|m| m.content.contains("approved-run"));
+        assert!(executed);
     }
 }

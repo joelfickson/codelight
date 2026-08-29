@@ -1,11 +1,12 @@
 use std::io::Write;
+use std::sync::Arc;
 use tokio::sync::mpsc;
-use vc_agent::Agent;
+use vc_agent::{Agent, YesApprover};
 use vc_gateway::GatewayClient;
 use vc_skills::{AddSkill, LoadSkill, ReadSkillResource, SearchSkills, SkillRegistry};
 use vc_tools::{
-    DeleteFile, EditFile, ListDirectory, MoveFile, ReadFile, RunCommand, SearchDocs, SearchInFiles,
-    ToolRegistry, WebFetch, WriteFile,
+    DeleteFile, EditFile, ListDirectory, MoveFile, PermissionPolicy, ReadFile, RunCommand,
+    SearchDocs, SearchInFiles, ToolRegistry, WebFetch, WriteFile,
 };
 use vc_types::AgentEvent;
 
@@ -33,7 +34,8 @@ async fn main() -> anyhow::Result<()> {
     tools.register(Box::new(SearchSkills));
     tools.register(Box::new(AddSkill));
 
-    let mut agent = Agent::new(gateway, tools);
+    let policy = PermissionPolicy::load(".codelight.toml");
+    let mut agent = Agent::new(gateway, tools, Arc::new(YesApprover), policy);
     agent.set_skills(&skills.advertise());
 
     let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
