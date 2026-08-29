@@ -106,7 +106,7 @@ impl<B: ChatBackend> Agent<B> {
         let mut mutated_since_check = false;
         let mut nudged = false;
 
-        for _ in 0..self.max_steps {
+        for step in 0..self.max_steps {
             let definitions = self.tools.definitions();
             let mut stream = self
                 .backend
@@ -146,7 +146,7 @@ impl<B: ChatBackend> Agent<B> {
 
             if calls.is_empty() {
                 self.history.push(Message::assistant(answer));
-                if mutated_since_check && !nudged {
+                if mutated_since_check && !nudged && step + 1 < self.max_steps {
                     nudged = true;
                     self.history.push(Message::system(
                         "You modified files this turn but ran no checks. Run the project's build, test, or lint command to verify your changes, or state explicitly why verification is not needed.",
@@ -554,6 +554,57 @@ mod tests {
         drain(rx).await;
         let seen = agent.backend.seen.lock().unwrap();
         assert_eq!(seen.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn last_step_nudge_is_skipped_and_finishes_normally() {
+        let backend = StubBackend::new(vec![
+            tool_call_turn("edit_file", r#"{}"#),
+            answer_turn("done"),
+        ]);
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(NamedStubTool {
+            tool_name: "edit_file",
+        }));
+        let mut agent = Agent::with_backend(
+            backend,
+            tools,
+            Arc::new(YesApprover),
+            empty_policy("last_step_nudge"),
+        );
+        agent.max_steps = 2;
+        let (tx, rx) = mpsc::channel(64);
+        agent.run("edit something", tx).await.unwrap();
+        let events = drain(rx).await;
+        assert!(matches!(events.last(), Some(AgentEvent::Done)));
+        assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error(_))));
+        let seen = agent.backend.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn allow_always_persists_pattern_and_executes() {
+        let path = std::env::temp_dir().join("vc_agent_allow_always.toml");
+        std::fs::remove_file(&path).ok();
+        let backend = StubBackend::new(vec![
+            tool_call_turn("run_command", r#"{"command": "echo persisted"}"#),
+            answer_turn("ok"),
+        ]);
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(RunCommand));
+        let approver = Arc::new(ScriptedApprover::new(Decision::AllowAlways));
+        let policy = PermissionPolicy::load(&path);
+        let mut agent = Agent::with_backend(backend, tools, approver, policy);
+        let (tx, rx) = mpsc::channel(64);
+        agent.run("run a command", tx).await.unwrap();
+        drain(rx).await;
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("echo *"));
+        let seen = agent.backend.seen.lock().unwrap();
+        let second_turn = &seen[1];
+        let executed = second_turn.iter().any(|m| m.content.contains("persisted"));
+        assert!(executed);
+        std::fs::remove_file(&path).ok();
     }
 
     #[tokio::test]

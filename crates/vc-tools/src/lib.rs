@@ -148,6 +148,22 @@ impl Tool for WriteFile {
 
         Ok(serde_json::json!({ "ok": true, "bytes_written": contents.len() }))
     }
+
+    fn approval_request(
+        &self,
+        args: &Value,
+        _policy: &PermissionPolicy,
+    ) -> Option<ApprovalRequest> {
+        let path = args["path"].as_str()?;
+        if std::path::Path::new(path).file_name()? != ".codelight.toml" {
+            return None;
+        }
+        Some(ApprovalRequest {
+            tool: self.name().to_string(),
+            action: format!("modify the permission config {path}"),
+            suggested_pattern: None,
+        })
+    }
 }
 
 pub struct ListDirectory;
@@ -394,6 +410,22 @@ impl Tool for EditFile {
         tokio::fs::write(path, updated).await?;
         Ok(serde_json::json!({"ok": true, "replacements": count}))
     }
+
+    fn approval_request(
+        &self,
+        args: &Value,
+        _policy: &PermissionPolicy,
+    ) -> Option<ApprovalRequest> {
+        let path = args["path"].as_str()?;
+        if std::path::Path::new(path).file_name()? != ".codelight.toml" {
+            return None;
+        }
+        Some(ApprovalRequest {
+            tool: self.name().to_string(),
+            action: format!("modify the permission config {path}"),
+            suggested_pattern: None,
+        })
+    }
 }
 
 pub struct DeleteFile;
@@ -480,7 +512,7 @@ impl Tool for MoveFile {
         _policy: &PermissionPolicy,
     ) -> Option<ApprovalRequest> {
         let to = args["to"].as_str()?;
-        if !std::path::Path::new(to).exists() {
+        if std::fs::symlink_metadata(to).is_err() {
             return None;
         }
         Some(ApprovalRequest {
@@ -1052,6 +1084,50 @@ mod tests {
                 .approval_request(&serde_json::json!({}), &policy)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn write_file_to_permission_config_requests_approval() {
+        let policy = empty_policy("write_config");
+        let request = WriteFile
+            .approval_request(
+                &serde_json::json!({"path": "some/dir/.codelight.toml", "contents": "x"}),
+                &policy,
+            )
+            .unwrap();
+        assert_eq!(request.tool, "write_file");
+        assert_eq!(
+            request.action,
+            "modify the permission config some/dir/.codelight.toml"
+        );
+        assert!(request.suggested_pattern.is_none());
+    }
+
+    #[test]
+    fn write_file_to_normal_path_returns_none() {
+        let policy = empty_policy("write_normal");
+        let request = WriteFile.approval_request(
+            &serde_json::json!({"path": "src/lib.rs", "contents": "x"}),
+            &policy,
+        );
+        assert!(request.is_none());
+    }
+
+    #[test]
+    fn edit_file_to_permission_config_requests_approval() {
+        let policy = empty_policy("edit_config");
+        let request = EditFile
+            .approval_request(
+                &serde_json::json!({"path": ".codelight.toml", "old_string": "a", "new_string": "b"}),
+                &policy,
+            )
+            .unwrap();
+        assert_eq!(request.tool, "edit_file");
+        assert_eq!(
+            request.action,
+            "modify the permission config .codelight.toml"
+        );
+        assert!(request.suggested_pattern.is_none());
     }
 
     #[test]

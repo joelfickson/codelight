@@ -7,12 +7,11 @@ pub struct PermissionPolicy {
     config_path: PathBuf,
 }
 
-const BUILTIN_PATTERNS: [&str; 16] = [
+const BUILTIN_PATTERNS: [&str; 15] = [
     "git status *",
     "git diff *",
     "git log *",
     "git show *",
-    "git branch *",
     "ls *",
     "pwd",
     "which *",
@@ -126,6 +125,7 @@ mod tests {
         assert!(!policy.allows("rm -rf /"));
         assert!(!policy.allows("git push origin main"));
         assert!(!policy.allows("npm install left-pad"));
+        assert!(!policy.allows("git branch -D main"));
     }
 
     #[test]
