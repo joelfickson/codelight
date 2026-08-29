@@ -4,19 +4,44 @@ use anyhow::Result;
 use clap::Parser;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tui_input::InputRequest;
-use vc_agent::{Agent, YesApprover};
+use vc_agent::{Agent, Approver, YesApprover};
 use vc_gateway::{DEFAULT_MODEL, GatewayClient};
 use vc_skills::{AddSkill, LoadSkill, ReadSkillResource, SearchSkills, SkillRegistry};
 use vc_tools::{
     DeleteFile, EditFile, ListDirectory, MoveFile, PermissionPolicy, ReadFile, RunCommand,
     SearchDocs, SearchInFiles, ToolRegistry, WebFetch, WriteFile,
 };
-use vc_types::{AgentEvent, Message};
+use vc_types::{AgentEvent, ApprovalRequest, Decision, Message};
 
 use app::App;
+
+pub struct PendingApproval {
+    pub request: ApprovalRequest,
+    pub respond: oneshot::Sender<Decision>,
+}
+
+struct TuiApprover {
+    tx: mpsc::Sender<PendingApproval>,
+}
+
+#[async_trait::async_trait]
+impl Approver for TuiApprover {
+    async fn approve(&self, request: ApprovalRequest) -> Decision {
+        let (respond, wait) = oneshot::channel();
+        if self
+            .tx
+            .send(PendingApproval { request, respond })
+            .await
+            .is_err()
+        {
+            return Decision::Deny;
+        }
+        wait.await.unwrap_or(Decision::Deny)
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "codelight", about = "A Vercel-specialized AI coding agent")]
@@ -32,6 +57,8 @@ struct Cli {
     model: Option<String>,
     #[arg(long, help = "List available Gateway models and exit")]
     list_models: bool,
+    #[arg(long, help = "Skip all approval prompts and allow every tool call")]
+    yolo: bool,
 }
 
 #[tokio::main]
@@ -47,7 +74,7 @@ async fn main() -> Result<()> {
         return list_models_cli().await;
     }
 
-    run(cli.demo, cli.model).await
+    run(cli.demo, cli.model, cli.yolo).await
 }
 
 async fn list_models_cli() -> Result<()> {
@@ -91,11 +118,12 @@ async fn check() -> Result<()> {
     Ok(())
 }
 
-async fn run(demo: bool, model_flag: Option<String>) -> Result<()> {
+async fn run(demo: bool, model_flag: Option<String>, yolo: bool) -> Result<()> {
     let model = model_flag
         .or_else(|| std::env::var("CODELIGHT_MODEL").ok())
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
     let mut app = App::new(project_name(), model_alias(&model));
+    let (approvals_tx, mut approvals_rx) = mpsc::channel::<PendingApproval>(8);
     let mut agent: Option<Agent> = if demo {
         app.seed_demo();
         None
@@ -118,8 +146,15 @@ async fn run(demo: bool, model_flag: Option<String>) -> Result<()> {
         tools.register(Box::new(ReadSkillResource::new(skills.clone())));
         tools.register(Box::new(SearchSkills));
         tools.register(Box::new(AddSkill));
+        let approver: Arc<dyn Approver> = if yolo {
+            Arc::new(YesApprover)
+        } else {
+            Arc::new(TuiApprover {
+                tx: approvals_tx.clone(),
+            })
+        };
         let policy = PermissionPolicy::load(".codelight.toml");
-        let mut agent = Agent::new(gateway, tools, Arc::new(YesApprover), policy);
+        let mut agent = Agent::new(gateway, tools, approver, policy);
         agent.set_skills(&skills.advertise());
         Some(agent)
     };
@@ -150,6 +185,24 @@ async fn run(demo: bool, model_flag: Option<String>) -> Result<()> {
                     continue;
                 }
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                if app.approval_is_open() {
+                    match key.code {
+                        KeyCode::Char('c') if ctrl => quit = true,
+                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                            app.resolve_approval(Decision::AllowOnce)
+                        }
+                        KeyCode::Char('a') | KeyCode::Char('A')
+                            if app.approval_offers_always() =>
+                        {
+                            app.resolve_approval(Decision::AllowAlways)
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                            app.resolve_approval(Decision::Deny)
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
                 if app.picker_is_open() {
                     match key.code {
                         KeyCode::Char('c') if ctrl => quit = true,
@@ -227,6 +280,9 @@ async fn run(demo: bool, model_flag: Option<String>) -> Result<()> {
                 {
                     agent = Some(reclaimed);
                 }
+            }
+            Some(pending) = approvals_rx.recv() => {
+                app.open_approval(pending);
             }
             _ = ticker.tick() => {
                 app.tick();

@@ -82,6 +82,7 @@ pub struct App {
     follow: bool,
     tick: usize,
     picker: Option<Picker>,
+    approval: Option<crate::PendingApproval>,
 }
 
 struct Picker {
@@ -127,6 +128,7 @@ impl App {
             follow: true,
             tick: 0,
             picker: None,
+            approval: None,
         }
     }
 
@@ -266,6 +268,31 @@ impl App {
         self.picker = None;
     }
 
+    pub fn open_approval(&mut self, pending: crate::PendingApproval) {
+        self.approval = Some(pending);
+    }
+
+    pub fn approval_is_open(&self) -> bool {
+        self.approval.is_some()
+    }
+
+    pub fn approval_action(&self) -> Option<&str> {
+        self.approval.as_ref().map(|p| p.request.action.as_str())
+    }
+
+    pub fn approval_offers_always(&self) -> bool {
+        self.approval
+            .as_ref()
+            .map(|p| p.request.suggested_pattern.is_some())
+            .unwrap_or(false)
+    }
+
+    pub fn resolve_approval(&mut self, decision: vc_types::Decision) {
+        if let Some(pending) = self.approval.take() {
+            pending.respond.send(decision).ok();
+        }
+    }
+
     pub fn seed_demo(&mut self) {
         self.push_user("ship the dashboard spinner to a preview");
         self.entries.push(Entry {
@@ -302,6 +329,47 @@ impl App {
         if self.picker.is_some() {
             self.render_picker(frame);
         }
+
+        if self.approval.is_some() {
+            self.render_approval(frame);
+        }
+    }
+
+    fn render_approval(&self, frame: &mut Frame) {
+        let Some(pending) = self.approval.as_ref() else {
+            return;
+        };
+        let area = centered_rect(72, 50, frame.area());
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(WARN))
+            .title(format!(" approve {}? ", pending.request.tool))
+            .padding(Padding::new(1, 1, 0, 0));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+
+        let action = Paragraph::new(Line::from(Span::styled(
+            self.approval_action().unwrap_or_default().to_string(),
+            Style::default().fg(FG),
+        )))
+        .wrap(Wrap { trim: false });
+        frame.render_widget(action, rows[0]);
+
+        let mut hints = vec!["y allow once".to_string()];
+        if let Some(pattern) = pending.request.suggested_pattern.as_ref() {
+            hints.push(format!("a always allow ({pattern})"));
+        }
+        hints.push("n/esc deny".to_string());
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                hints.join(" · "),
+                Style::default().fg(FAINT),
+            ))),
+            rows[1],
+        );
     }
 
     fn render_picker(&self, frame: &mut Frame) {
