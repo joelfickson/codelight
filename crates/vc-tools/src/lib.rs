@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 mod docs;
+mod policy;
+pub use policy::PermissionPolicy;
 
 #[async_trait]
 pub trait Tool: Send + Sync {

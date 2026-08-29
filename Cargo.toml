@@ -28,7 +28,7 @@ uuid = { version = "1", features = ["v4"] }
 dotenvy = "0.15"
 directories = "6"
 clap = { version = "4", features = ["derive"] }
-
+toml_edit = "0.22"
 
 ratatui = "0.30"
 tui-input = { version = "0.14", default-features = false }
