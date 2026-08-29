@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
+use vc_types::ApprovalRequest;
 
 mod docs;
 mod policy;
@@ -15,6 +16,11 @@ pub trait Tool: Send + Sync {
     fn parameters_schema(&self) -> Value;
 
     async fn execute(&self, args: Value) -> Result<Value>;
+
+    fn approval_request(&self, args: &Value, policy: &PermissionPolicy) -> Option<ApprovalRequest> {
+        let _ = (args, policy);
+        None
+    }
 
     fn to_api_definitions(&self) -> Value {
         serde_json::json!({
@@ -309,6 +315,18 @@ impl Tool for RunCommand {
             "stderr": cap_output(&String::from_utf8_lossy(&output.stderr)),
         }))
     }
+
+    fn approval_request(&self, args: &Value, policy: &PermissionPolicy) -> Option<ApprovalRequest> {
+        let command = args["command"].as_str()?;
+        if policy.allows(command) {
+            return None;
+        }
+        Some(ApprovalRequest {
+            tool: self.name().to_string(),
+            action: command.to_string(),
+            suggested_pattern: PermissionPolicy::suggested_pattern(command),
+        })
+    }
 }
 
 fn cap_output(text: &str) -> String {
@@ -399,6 +417,19 @@ impl Tool for DeleteFile {
         tokio::fs::remove_file(path).await?;
         Ok(serde_json::json!({"ok": true}))
     }
+
+    fn approval_request(
+        &self,
+        args: &Value,
+        _policy: &PermissionPolicy,
+    ) -> Option<ApprovalRequest> {
+        let path = args["path"].as_str()?;
+        Some(ApprovalRequest {
+            tool: self.name().to_string(),
+            action: format!("delete {path}"),
+            suggested_pattern: None,
+        })
+    }
 }
 
 pub struct MoveFile;
@@ -434,6 +465,22 @@ impl Tool for MoveFile {
         }
         tokio::fs::rename(from, to).await?;
         Ok(serde_json::json!({"ok": true}))
+    }
+
+    fn approval_request(
+        &self,
+        args: &Value,
+        _policy: &PermissionPolicy,
+    ) -> Option<ApprovalRequest> {
+        let to = args["to"].as_str()?;
+        if !std::path::Path::new(to).exists() {
+            return None;
+        }
+        Some(ApprovalRequest {
+            tool: self.name().to_string(),
+            action: format!("overwrite {to}"),
+            suggested_pattern: None,
+        })
     }
 }
 
@@ -930,5 +977,73 @@ mod tests {
     async fn web_fetch_errors_when_url_is_missing() {
         let result = WebFetch.execute(serde_json::json!({})).await;
         assert!(result.is_err());
+    }
+
+    fn empty_policy(name: &str) -> PermissionPolicy {
+        PermissionPolicy::load(std::env::temp_dir().join(format!("vc_gate_{name}.toml")))
+    }
+
+    #[test]
+    fn run_command_allowed_by_policy_needs_no_approval() {
+        let policy = empty_policy("allowed");
+        let request =
+            RunCommand.approval_request(&serde_json::json!({"command": "git status"}), &policy);
+        assert!(request.is_none());
+    }
+
+    #[test]
+    fn run_command_not_allowed_requests_approval_with_pattern() {
+        let policy = empty_policy("blocked");
+        let request = RunCommand
+            .approval_request(&serde_json::json!({"command": "rm -rf build"}), &policy)
+            .unwrap();
+        assert_eq!(request.tool, "run_command");
+        assert_eq!(request.action, "rm -rf build");
+        assert_eq!(request.suggested_pattern.as_deref(), Some("rm *"));
+    }
+
+    #[test]
+    fn delete_file_always_requests_approval_without_pattern() {
+        let policy = empty_policy("delete");
+        let request = DeleteFile
+            .approval_request(&serde_json::json!({"path": "src/lib.rs"}), &policy)
+            .unwrap();
+        assert_eq!(request.tool, "delete_file");
+        assert_eq!(request.action, "delete src/lib.rs");
+        assert!(request.suggested_pattern.is_none());
+    }
+
+    #[test]
+    fn move_file_requests_approval_only_when_destination_exists() {
+        let policy = empty_policy("move");
+        let existing = std::env::temp_dir().join("vc_gate_move_dest.txt");
+        std::fs::write(&existing, "x").unwrap();
+        let request = MoveFile.approval_request(
+            &serde_json::json!({"from": "a.txt", "to": existing.to_str().unwrap()}),
+            &policy,
+        );
+        assert!(request.is_some());
+        assert!(request.unwrap().action.starts_with("overwrite "));
+        let fresh = MoveFile.approval_request(
+            &serde_json::json!({"from": "a.txt", "to": "/nonexistent/vc_gate_nope.txt"}),
+            &policy,
+        );
+        assert!(fresh.is_none());
+        std::fs::remove_file(&existing).ok();
+    }
+
+    #[test]
+    fn ungated_tools_return_none() {
+        let policy = empty_policy("ungated");
+        assert!(
+            ReadFile
+                .approval_request(&serde_json::json!({"path": "x"}), &policy)
+                .is_none()
+        );
+        assert!(
+            EditFile
+                .approval_request(&serde_json::json!({}), &policy)
+                .is_none()
+        );
     }
 }
