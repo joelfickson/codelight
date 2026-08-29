@@ -1121,7 +1121,7 @@ Add to the `tests` module:
     async fn run_command_clears_the_mutation_flag() {
         let backend = StubBackend::new(vec![
             tool_call_turn("edit_file", r#"{}"#),
-            tool_call_turn("run_command", r#"{"command": "cargo check"}"#),
+            tool_call_turn("run_command", r#"{"command": "echo checked"}"#),
             answer_turn("verified and done"),
         ]);
         let mut tools = ToolRegistry::new();
