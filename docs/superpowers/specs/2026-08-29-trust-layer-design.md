@@ -47,9 +47,10 @@ New module in `vc-tools`: `PermissionPolicy`.
   without `*` must match the command token-for-token. No regex, no globbing
   elsewhere in the pattern.
 - Commands containing shell metacharacters (`;`, `|`, `&`, backtick, `$`,
-  `(`, `)`, `<`, `>`) never auto-match any pattern, builtin or user. This
-  closes prefix injection such as `git status; rm -rf /`; the user can still
-  approve such commands interactively.
+  `(`, `)`, `<`, `>`) or any control character (newline, carriage return,
+  tab) never auto-match any pattern, builtin or user. This closes prefix
+  injection such as `git status; rm -rf /` and its newline-separator
+  equivalent; the user can still approve such commands interactively.
 - `PermissionPolicy::allows(command: &str) -> bool` checks built-ins then user
   patterns.
 - `PermissionPolicy::persist_allow(pattern: &str)` appends to the
