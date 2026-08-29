@@ -32,9 +32,12 @@ New module in `vc-tools`: `PermissionPolicy`.
 - Holds two pattern lists: a built-in safe list and user patterns loaded from
   `.codelight.toml` in the current working directory.
 - Built-in safe list (commands that read or check, never mutate):
-  `git status`, `git diff`, `git log`, `git show`, `git branch`, `ls`, `pwd`,
+  `git status`, `git diff`, `git log`, `git show`, `ls`, `pwd`,
   `which`, `cargo check`, `cargo test`, `cargo fmt`, `cargo clippy`,
-  `cargo build`, `npm test`, `npx tsc`, `pnpm test`.
+  `cargo build`, `npm test`, `npx tsc`, `pnpm test`. `git branch` is
+  deliberately absent: its flag forms delete and rename branches.
+- A bare `*` user pattern allows every metacharacter-free command; that is
+  the user's explicit, hand-written choice and is honored as such.
 - Config format:
 
   ```toml
@@ -119,6 +122,11 @@ fn approval_request(&self, args: &Value, policy: &PermissionPolicy) -> Option<Ap
 - `DeleteFile`: always `Some`, action `delete <path>`, no suggested pattern.
 - `MoveFile`: `Some` only when the destination path exists, action
   `overwrite <dest>`, no suggested pattern.
+- `WriteFile` and `EditFile`: `Some` only when the target path is the
+  permission config itself (file name `.codelight.toml`), action
+  `modify the permission config <path>`, no suggested pattern. Ungated
+  writes could otherwise plant allow patterns that silently take effect in
+  the next session.
 - All other tools: default `None`.
 
 The policy is owned by the `Agent` behind a `std::sync::Mutex` (guards dropped
