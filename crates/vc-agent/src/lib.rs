@@ -103,6 +103,9 @@ impl<B: ChatBackend> Agent<B> {
     ) -> Result<()> {
         self.history.push(Message::user(user_message));
 
+        let mut mutated_since_check = false;
+        let mut nudged = false;
+
         for _ in 0..self.max_steps {
             let definitions = self.tools.definitions();
             let mut stream = self
@@ -143,6 +146,13 @@ impl<B: ChatBackend> Agent<B> {
 
             if calls.is_empty() {
                 self.history.push(Message::assistant(answer));
+                if mutated_since_check && !nudged {
+                    nudged = true;
+                    self.history.push(Message::system(
+                        "You modified files this turn but ran no checks. Run the project's build, test, or lint command to verify your changes, or state explicitly why verification is not needed.",
+                    ));
+                    continue;
+                }
                 events.send(AgentEvent::Done).await.ok();
                 return Ok(());
             }
@@ -158,7 +168,18 @@ impl<B: ChatBackend> Agent<B> {
                     })
                     .await
                     .ok();
-                let (result, _executed_ok) = self.execute(&call, &events).await;
+                let (result, executed_ok) = self.execute(&call, &events).await;
+                if executed_ok {
+                    match call.name.as_str() {
+                        "edit_file" | "write_file" | "delete_file" | "move_file" => {
+                            mutated_since_check = true;
+                        }
+                        "run_command" => {
+                            mutated_since_check = false;
+                        }
+                        _ => {}
+                    }
+                }
                 self.history.push(Message::tool_result(call.id, result));
             }
         }
@@ -463,5 +484,90 @@ mod tests {
             .iter()
             .any(|m| m.content.contains("approved-run"));
         assert!(executed);
+    }
+
+    struct NamedStubTool {
+        tool_name: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl vc_tools::Tool for NamedStubTool {
+        fn name(&self) -> &str {
+            self.tool_name
+        }
+        fn description(&self) -> &str {
+            "stub"
+        }
+        fn parameters_schema(&self) -> Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    #[tokio::test]
+    async fn finishing_after_mutation_without_check_triggers_one_nudge() {
+        let backend = StubBackend::new(vec![
+            tool_call_turn("edit_file", r#"{}"#),
+            answer_turn("all done"),
+            answer_turn("really done"),
+        ]);
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(NamedStubTool {
+            tool_name: "edit_file",
+        }));
+        let mut agent =
+            Agent::with_backend(backend, tools, Arc::new(YesApprover), empty_policy("nudge"));
+        let (tx, rx) = mpsc::channel(64);
+        agent.run("edit something", tx).await.unwrap();
+        drain(rx).await;
+        let seen = agent.backend.seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        let nudge_turn = &seen[2];
+        let nudged = nudge_turn
+            .iter()
+            .any(|m| m.content.contains("ran no checks"));
+        assert!(nudged);
+    }
+
+    #[tokio::test]
+    async fn run_command_clears_the_mutation_flag() {
+        let backend = StubBackend::new(vec![
+            tool_call_turn("edit_file", r#"{}"#),
+            tool_call_turn("run_command", r#"{"command": "echo checked"}"#),
+            answer_turn("verified and done"),
+        ]);
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(NamedStubTool {
+            tool_name: "edit_file",
+        }));
+        tools.register(Box::new(RunCommand));
+        let mut agent = Agent::with_backend(
+            backend,
+            tools,
+            Arc::new(YesApprover),
+            empty_policy("cleared"),
+        );
+        let (tx, rx) = mpsc::channel(64);
+        agent.run("edit and verify", tx).await.unwrap();
+        drain(rx).await;
+        let seen = agent.backend.seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn no_mutation_means_no_nudge() {
+        let mut agent = Agent::with_backend(
+            StubBackend::new(vec![answer_turn("just an answer")]),
+            ToolRegistry::new(),
+            Arc::new(YesApprover),
+            empty_policy("clean"),
+        );
+        let (tx, rx) = mpsc::channel(64);
+        agent.run("hello", tx).await.unwrap();
+        drain(rx).await;
+        let seen = agent.backend.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
     }
 }
