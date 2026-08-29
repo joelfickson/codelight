@@ -35,6 +35,9 @@ The approved phased plan (v0.1-v0.4, walking-skeleton-first) is at
 `~/.claude/plans/create-a-plan-for-memoized-hartmanis.md`. Full design is in Notion
 (page id `38ddc33ac53f81fe8c2ddef16efbe3b5`).
 
+The trust layer (approval gating, verify nudge, untrusted-content framing) is specified
+in `docs/superpowers/specs/2026-08-29-trust-layer-design.md`.
+
 ## Conventions
 
 - Rust edition 2024, `resolver = "3"`. Shared deps pinned once in `[workspace.dependencies]`;
