@@ -13,3 +13,7 @@ Codelight is a general-purpose coding agent. Support configurable OpenAI-compati
 # Crate naming
 
 Use unprefixed crate names and directories: agent, cli, gateway, tools, skills, mcp, context, and types. Do not add vc or codelight prefixes to internal crates. The executable remains codelight.
+
+# Turn limits
+
+Agent turns must not have a default step cap. Any step limit must be explicitly requested through configuration; never display a hardcoded step maximum.

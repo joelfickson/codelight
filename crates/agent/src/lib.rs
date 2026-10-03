@@ -50,7 +50,7 @@ pub struct Agent<B: ChatBackend = GatewayClient> {
     backend: B,
     tools: ToolRegistry,
     history: Vec<Message>,
-    max_steps: usize,
+    max_steps: Option<usize>,
     context_bytes: usize,
     session: Option<SessionStore>,
     approver: Arc<dyn Approver>,
@@ -87,7 +87,7 @@ impl<B: ChatBackend> Agent<B> {
             backend,
             tools,
             history: vec![Message::system(SYSTEM_PROMPT)],
-            max_steps: 20,
+            max_steps: None,
             context_bytes: DEFAULT_CONTEXT_BYTES,
             session: None,
             approver,
@@ -101,9 +101,13 @@ impl<B: ChatBackend> Agent<B> {
         }
     }
 
-    pub fn configure_limits(&mut self, max_steps: usize, context_bytes: usize) -> Result<()> {
+    pub fn configure_limits(
+        &mut self,
+        max_steps: Option<usize>,
+        context_bytes: usize,
+    ) -> Result<()> {
         anyhow::ensure!(
-            max_steps > 0 && context_bytes > 0,
+            max_steps.is_none_or(|limit| limit > 0) && context_bytes > 0,
             "step and context limits must be positive"
         );
         self.max_steps = max_steps;
@@ -162,11 +166,16 @@ impl<B: ChatBackend> Agent<B> {
         let mut mutated_since_check = false;
         let mut nudged = false;
 
-        for step in 0..self.max_steps {
+        let mut step = 0;
+        loop {
+            if self.max_steps.is_some_and(|limit| step >= limit) {
+                bail!("reached max steps without a final answer");
+            }
+            step += 1;
             let definitions = self.tools.definitions();
             let (context, omitted) =
                 bounded_context(&self.history, &definitions, self.context_bytes)?;
-            if omitted > 0 && step == 0 {
+            if omitted > 0 && step == 1 {
                 events.send(AgentEvent::Info(format!("Omitted {omitted} earlier messages from model context; full session history is retained."))).await.ok();
             }
             let mut stream = self.backend.chat_stream(&context, &definitions).await?;
@@ -210,7 +219,8 @@ impl<B: ChatBackend> Agent<B> {
 
             if calls.is_empty() {
                 self.history.push(Message::assistant(answer));
-                if mutated_since_check && !nudged && step + 1 < self.max_steps {
+                if mutated_since_check && !nudged && self.max_steps.is_none_or(|limit| step < limit)
+                {
                     nudged = true;
                     self.history.push(Message::system(
                         "You modified files this turn but ran no checks. Run the project's build, test, or lint command to verify your changes, or state explicitly why verification is not needed.",
@@ -248,8 +258,6 @@ impl<B: ChatBackend> Agent<B> {
                 self.checkpoint()?;
             }
         }
-
-        bail!("reached max steps without a final answer")
     }
 
     async fn execute(&self, call: &ToolCall, events: &mpsc::Sender<AgentEvent>) -> (String, bool) {
@@ -630,7 +638,7 @@ mod tests {
             Arc::new(YesApprover),
             empty_policy("last_step_nudge"),
         );
-        agent.max_steps = 2;
+        agent.max_steps = Some(2);
         let (tx, rx) = mpsc::channel(64);
         agent.run("edit something", tx).await.unwrap();
         let events = drain(rx).await;
@@ -820,10 +828,83 @@ mod tests {
             Arc::new(YesApprover),
             empty_policy("overflow"),
         );
-        agent.configure_limits(20, 1).unwrap();
+        agent.configure_limits(None, 1).unwrap();
         let (tx, rx) = mpsc::channel(64);
         assert!(agent.run("hello", tx).await.is_err());
         assert!(agent.backend.seen.lock().unwrap().is_empty());
+        assert!(matches!(drain(rx).await.last(), Some(AgentEvent::Done)));
+    }
+    #[tokio::test]
+    async fn unlimited_turn_continues_past_twenty_steps_and_still_nudges() {
+        let mut turns = vec![tool_call_turn("edit_file", "{}"); 25];
+        turns.push(answer_turn("finished editing"));
+        turns.push(answer_turn("verification is not needed for this fixture"));
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(NamedStubTool {
+            tool_name: "edit_file",
+        }));
+        let mut agent = Agent::with_backend(
+            StubBackend::new(turns),
+            tools,
+            Arc::new(YesApprover),
+            empty_policy("unlimited"),
+        );
+        let (tx, rx) = mpsc::channel(256);
+        agent.run("keep working", tx).await.unwrap();
+        let events = drain(rx).await;
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::ToolFinished { ok: true, .. }))
+                .count(),
+            25
+        );
+        assert!(matches!(events.last(), Some(AgentEvent::Done)));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Error(_)))
+        );
+        let seen = agent.backend.seen.lock().unwrap();
+        assert_eq!(seen.len(), 27);
+        assert!(
+            seen.last()
+                .unwrap()
+                .iter()
+                .any(|message| message.content.contains("ran no checks"))
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_step_limit_still_stops_and_completes_turn() {
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(NamedStubTool {
+            tool_name: "read_file",
+        }));
+        let mut agent = Agent::with_backend(
+            StubBackend::new(vec![tool_call_turn("read_file", "{}"); 3]),
+            tools,
+            Arc::new(YesApprover),
+            empty_policy("limited"),
+        );
+        assert!(
+            agent
+                .configure_limits(Some(0), DEFAULT_CONTEXT_BYTES)
+                .is_err()
+        );
+        agent
+            .configure_limits(Some(2), DEFAULT_CONTEXT_BYTES)
+            .unwrap();
+        let (tx, rx) = mpsc::channel(64);
+        assert!(
+            agent
+                .run("inspect", tx)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("max steps")
+        );
+        assert_eq!(agent.backend.seen.lock().unwrap().len(), 2);
         assert!(matches!(drain(rx).await.last(), Some(AgentEvent::Done)));
     }
 }
