@@ -502,7 +502,7 @@ impl App {
             Line::default(),
             label("session"),
             Line::from(Span::styled(
-                format!("step {}/20", self.steps),
+                format!("step {}", self.steps),
                 Style::default().fg(MUTED),
             )),
         ]
@@ -541,7 +541,7 @@ impl App {
         let left = Line::from(vec![
             Span::styled(glyph, Style::default().fg(color)),
             Span::styled(
-                format!(" {word} · step {}/20 · {}", self.steps, self.project),
+                format!(" {word} · step {} · {}", self.steps, self.project),
                 Style::default().fg(MUTED),
             ),
         ]);

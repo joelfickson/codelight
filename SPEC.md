@@ -42,3 +42,7 @@ Each PR runs cargo fmt, cargo clippy --workspace --all-targets, and cargo test -
 ## Implemented validation
 
 The stack implements failure recovery, atomic local session checkpoints, whole-turn byte-bounded context, and the `eval` runner. Workspace tests and Clippy pass. The three scripted coding fixtures pass independent acceptance checks, and a false-success regression fails evaluation as intended. Live-model evaluations have not been run. Context pruning intentionally does not summarize earlier work or guarantee a provider token limit.
+
+## Unlimited turns by default
+
+Remove the default 20-step turn limit. Retain an optional explicit --max-steps cap, preserve verification reminders and existing error handling, and display the actual step count without a hardcoded maximum. Verify a turn exceeding 20 tool steps and explicit limit behavior.
