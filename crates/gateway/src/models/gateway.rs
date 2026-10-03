@@ -15,7 +15,7 @@ pub const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4-6";
 #[derive(Serialize)]
 struct ChatStreamRequest<'a> {
     model: &'a str,
-    messages: &'a [Message],
+    messages: Vec<Value>,
     max_tokens: u32,
     stream: bool,
     stream_options: StreamOptions,
@@ -62,6 +62,8 @@ struct FunctionDelta {
 
 #[derive(Debug, thiserror::Error)]
 pub enum GatewayError {
+    #[error("{0}")]
+    ChatGpt(#[from] anyhow::Error),
     #[error("Set CODELIGHT_API_KEY or AI_GATEWAY_API_KEY for the default Gateway")]
     MissingApiKey,
     #[error("Set CODELIGHT_MODEL when using a custom CODELIGHT_BASE_URL")]
@@ -82,12 +84,13 @@ pub struct GatewayClient {
     api_key: Option<String>,
     model: String,
     base_url: String,
+    chatgpt: Option<crate::chatgpt::ChatGptClient>,
 }
 
 #[derive(Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    messages: &'a [Message],
+    messages: Vec<Value>,
     max_tokens: u32,
 }
 
@@ -134,6 +137,24 @@ impl From<ApiUsage> for Usage {
 }
 
 impl GatewayClient {
+    pub async fn from_chatgpt(model: Option<String>) -> Result<Self, GatewayError> {
+        let chatgpt = crate::chatgpt::ChatGptClient::new().await?;
+        let models = chatgpt.list_models().await?;
+        let model = model
+            .or_else(|| models.first().cloned())
+            .ok_or_else(|| anyhow::anyhow!("No ChatGPT models are available for this account"))?;
+        if !models.contains(&model) {
+            return Err(anyhow::anyhow!("Model is not available for this ChatGPT account; use --provider chatgpt --list-models").into());
+        }
+        Ok(Self {
+            http: reqwest::Client::new(),
+            api_key: None,
+            model,
+            base_url: "https://api.openai.com/v1".into(),
+            chatgpt: Some(chatgpt),
+        })
+    }
+
     pub fn from_env() -> Result<Self, GatewayError> {
         Self::from_env_with_model(None)
     }
@@ -191,6 +212,7 @@ impl GatewayClient {
             api_key,
             model,
             base_url,
+            chatgpt: None,
         })
     }
 
@@ -213,6 +235,9 @@ impl GatewayClient {
     }
 
     pub async fn list_models(&self) -> Result<Vec<String>, GatewayError> {
+        if let Some(client) = &self.chatgpt {
+            return Ok(client.list_models().await?);
+        }
         let response = send_with_retry(self.request(reqwest::Method::GET, "models")).await?;
         let status = response.status();
         if !status.is_success() {
@@ -229,9 +254,22 @@ impl GatewayClient {
     }
 
     pub async fn chat(&self, messages: &[Message]) -> Result<(String, Usage), GatewayError> {
+        if self.chatgpt.is_some() {
+            let mut stream = self.chat_stream(messages, &[]).await?;
+            let mut answer = String::new();
+            while let Some(event) = stream.next().await {
+                match event {
+                    StreamEvent::Token(text) => answer.push_str(&text),
+                    StreamEvent::Done { usage } => return Ok((answer, usage)),
+                    StreamEvent::Error(error) => return Err(anyhow::anyhow!(error).into()),
+                    _ => {}
+                }
+            }
+            return Err(anyhow::anyhow!("ChatGPT stream ended before completion").into());
+        }
         let request = ChatRequest {
             model: self.model.as_str(),
-            messages,
+            messages: chat_messages(messages),
             max_tokens: 1024,
         };
 
@@ -266,9 +304,12 @@ impl GatewayClient {
         messages: &[Message],
         tools: &[Value],
     ) -> Result<BoxStream<'static, StreamEvent>, GatewayError> {
+        if let Some(client) = &self.chatgpt {
+            return Ok(client.chat_stream(&self.model, messages, tools).await?);
+        }
         let request = ChatStreamRequest {
             model: self.model.as_str(),
-            messages,
+            messages: chat_messages(messages),
             max_tokens: 1024,
             stream: true,
             stream_options: StreamOptions {
@@ -662,5 +703,32 @@ mod recovery_tests {
             .unwrap();
         assert_eq!(response.status(), 503);
         assert_eq!(task.await.unwrap(), 3);
+    }
+}
+
+fn chat_messages(messages: &[Message]) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|message| {
+            let mut value =
+                serde_json::to_value(message).expect("Message serialization is infallible");
+            value.as_object_mut().unwrap().remove("response_items");
+            value
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod provider_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn responses_metadata_is_not_sent_to_chat_completions() {
+        let mut message = Message::assistant("hello");
+        message.response_items =
+            vec![serde_json::json!({"type":"reasoning","encrypted_content":"opaque-test"})];
+        let wire = chat_messages(&[message]);
+        assert!(wire[0].get("response_items").is_none());
+        assert_eq!(wire[0]["content"], "hello");
     }
 }

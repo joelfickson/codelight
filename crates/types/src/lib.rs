@@ -17,6 +17,8 @@ pub struct Message {
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub response_items: Vec<serde_json::Value>,
 }
 
 impl Message {
@@ -25,6 +27,7 @@ impl Message {
             role: Role::System,
             content: content.into(),
             tool_calls: Vec::new(),
+            response_items: Vec::new(),
             tool_call_id: None,
         }
     }
@@ -34,6 +37,7 @@ impl Message {
             role: Role::User,
             content: content.into(),
             tool_calls: Vec::new(),
+            response_items: Vec::new(),
             tool_call_id: None,
         }
     }
@@ -43,6 +47,7 @@ impl Message {
             role: Role::Assistant,
             content: content.into(),
             tool_calls: Vec::new(),
+            response_items: Vec::new(),
             tool_call_id: None,
         }
     }
@@ -52,6 +57,7 @@ impl Message {
             role: Role::Assistant,
             content: String::new(),
             tool_calls,
+            response_items: Vec::new(),
             tool_call_id: None,
         }
     }
@@ -61,6 +67,7 @@ impl Message {
             role: Role::Tool,
             content: content.into(),
             tool_calls: Vec::new(),
+            response_items: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
         }
     }
@@ -120,6 +127,7 @@ pub struct Usage {
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     Token(String),
+    ResponseItems(Vec<serde_json::Value>),
     ToolCallStart { id: String, name: String },
     ToolCallArgs { id: String, chunk: String },
     ToolCallEnd { id: String },

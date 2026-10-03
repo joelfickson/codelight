@@ -2,7 +2,7 @@ mod app;
 
 use agent::{Agent, Approver, YesApprover};
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand, ValueEnum};
 use context::{DEFAULT_CONTEXT_BYTES, SessionStore};
 use gateway::{DEFAULT_MODEL, GatewayClient};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -45,9 +45,43 @@ impl Approver for TuiApprover {
     }
 }
 
+#[derive(Clone, Copy, Default, ValueEnum)]
+enum Provider {
+    #[default]
+    ApiKey,
+    Chatgpt,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Login {
+        #[arg(long, conflicts_with = "account")]
+        new: bool,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    Logout {
+        #[arg(long)]
+        account: Option<String>,
+    },
+    Accounts {
+        #[arg(long)]
+        select: Option<String>,
+    },
+}
+
 #[derive(Parser)]
 #[command(name = "codelight", about = "A general-purpose AI coding agent")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+    #[arg(
+        long,
+        value_enum,
+        default_value = "api-key",
+        help = "Model authentication provider"
+    )]
+    provider: Provider,
     #[arg(long, help = "Validate the model connection and exit")]
     check: bool,
     #[arg(long, help = "Show a sample session without connecting to a model")]
@@ -75,12 +109,16 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
+    if let Some(command) = cli.command {
+        return account_command(command).await;
+    }
+
     if cli.check {
-        return check(cli.model).await;
+        return check(cli.provider, cli.model).await;
     }
 
     if cli.list_models {
-        return list_models_cli(cli.model).await;
+        return list_models_cli(cli.provider, cli.model).await;
     }
 
     if cli.init {
@@ -115,8 +153,8 @@ fn initialize_project() -> Result<()> {
     Ok(())
 }
 
-async fn list_models_cli(model: Option<String>) -> Result<()> {
-    let gateway = GatewayClient::from_env_with_model(model)?;
+async fn list_models_cli(provider: Provider, model: Option<String>) -> Result<()> {
+    let gateway = create_gateway(provider, model).await?;
     for id in gateway.list_models().await? {
         println!("{id}");
     }
@@ -144,8 +182,8 @@ fn model_alias(model: &str) -> String {
     short.to_string()
 }
 
-async fn check(model: Option<String>) -> Result<()> {
-    let gateway = GatewayClient::from_env_with_model(model)?;
+async fn check(provider: Provider, model: Option<String>) -> Result<()> {
+    let gateway = create_gateway(provider, model).await?;
     let (_reply, usage) = gateway
         .chat(&[Message::user("Reply with the single word: ok")])
         .await?;
@@ -159,6 +197,7 @@ async fn check(model: Option<String>) -> Result<()> {
 async fn run(cli: Cli) -> Result<()> {
     let Cli {
         demo,
+        provider,
         model: model_flag,
         yolo,
         session,
@@ -170,7 +209,7 @@ async fn run(cli: Cli) -> Result<()> {
     let gateway = if demo {
         None
     } else {
-        Some(GatewayClient::from_env_with_model(model_flag.clone())?)
+        Some(create_gateway(provider, model_flag.clone()).await?)
     };
     let model = gateway
         .as_ref()
@@ -391,5 +430,100 @@ mod tests {
         assert_eq!(model_alias("anthropic/claude-haiku-4.5"), "haiku 4.5");
         assert_eq!(model_alias("anthropic/claude-opus-4-6"), "opus 4.6");
         assert_eq!(model_alias("openai/gpt-5"), "gpt-5");
+    }
+}
+
+async fn create_gateway(provider: Provider, model: Option<String>) -> Result<GatewayClient> {
+    match provider {
+        Provider::ApiKey => Ok(GatewayClient::from_env_with_model(model)?),
+        Provider::Chatgpt => Ok(GatewayClient::from_chatgpt(model).await?),
+    }
+}
+
+async fn account_command(command: Command) -> Result<()> {
+    let auth = gateway::chatgpt_auth::ChatGptAuth::new()?;
+    match command {
+        Command::Login { new, account } => {
+            let id = auth.login(account.as_deref(), new).await?;
+            println!("Signed in to ChatGPT. Account: {id}");
+            println!("Start with: codelight --provider chatgpt");
+        }
+        Command::Logout { account } => {
+            let revoked = auth.logout(account.as_deref()).await?;
+            println!("Local ChatGPT credentials cleared.");
+            if !revoked {
+                println!(
+                    "Server revocation could not be confirmed. You can also revoke access in ChatGPT settings."
+                );
+            }
+        }
+        Command::Accounts { select } => {
+            if let Some(id) = select {
+                auth.select(&id).await?;
+            }
+            let accounts = auth.accounts().await?;
+            if accounts.is_empty() {
+                println!("No ChatGPT accounts. Run codelight login.");
+            }
+            for account in accounts {
+                let state = if account.active {
+                    "active"
+                } else if account.connected {
+                    "connected"
+                } else {
+                    "signed out"
+                };
+                println!(
+                    "{}  {}  {state}",
+                    account.id,
+                    account.email.as_deref().unwrap_or("ChatGPT account")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod authentication_cli_tests {
+    use super::*;
+
+    #[test]
+    fn provider_selection_is_explicit() {
+        assert!(matches!(
+            Cli::try_parse_from(["codelight"]).unwrap().provider,
+            Provider::ApiKey
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["codelight", "--provider", "chatgpt", "--check"])
+                .unwrap()
+                .provider,
+            Provider::Chatgpt
+        ));
+        assert!(Cli::try_parse_from(["codelight", "--provider", "unknown"]).is_err());
+    }
+
+    #[test]
+    fn account_commands_parse_and_new_conflicts_with_existing_account() {
+        assert!(matches!(
+            Cli::try_parse_from(["codelight", "login"]).unwrap().command,
+            Some(Command::Login {
+                new: false,
+                account: None
+            })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["codelight", "accounts", "--select", "test"])
+                .unwrap()
+                .command,
+            Some(Command::Accounts { select: Some(_) })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["codelight", "logout", "--account", "test"])
+                .unwrap()
+                .command,
+            Some(Command::Logout { account: Some(_) })
+        ));
+        assert!(Cli::try_parse_from(["codelight", "login", "--new", "--account", "test"]).is_err());
     }
 }

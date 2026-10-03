@@ -15,6 +15,7 @@ async fn main() -> anyhow::Result<()> {
 
     while let Some(event) = stream.next().await {
         match event {
+            types::StreamEvent::ResponseItems(_) => {}
             types::StreamEvent::Done { usage } => println!("Here is usage {:?} ", usage),
             types::StreamEvent::Error(error) => {
                 if !error.is_empty() {
