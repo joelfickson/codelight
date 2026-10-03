@@ -3,11 +3,13 @@ mod app;
 use anyhow::Result;
 use clap::Parser;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tui_input::InputRequest;
 use vc_agent::{Agent, Approver, YesApprover};
+use vc_context::{DEFAULT_CONTEXT_BYTES, SessionStore};
 use vc_gateway::{DEFAULT_MODEL, GatewayClient};
 use vc_skills::{AddSkill, LoadSkill, ReadSkillResource, SearchSkills, SkillRegistry};
 use vc_tools::{
@@ -59,6 +61,14 @@ struct Cli {
     list_models: bool,
     #[arg(long, help = "Skip all approval prompts and allow every tool call")]
     yolo: bool,
+    #[arg(long, conflicts_with_all = ["resume", "demo", "check", "list_models"], help = "Save a new session to this file")]
+    session: Option<PathBuf>,
+    #[arg(long, conflicts_with_all = ["demo", "check", "list_models"], help = "Resume a saved session in its original workspace")]
+    resume: Option<PathBuf>,
+    #[arg(long, default_value_t = DEFAULT_CONTEXT_BYTES, help = "Maximum serialized message and tool-definition bytes per request")]
+    context_bytes: usize,
+    #[arg(long, default_value_t = 20, help = "Maximum model steps per turn")]
+    max_steps: usize,
 }
 
 #[tokio::main]
@@ -74,7 +84,7 @@ async fn main() -> Result<()> {
         return list_models_cli().await;
     }
 
-    run(cli.demo, cli.model, cli.yolo).await
+    run(cli).await
 }
 
 async fn list_models_cli() -> Result<()> {
@@ -118,7 +128,17 @@ async fn check() -> Result<()> {
     Ok(())
 }
 
-async fn run(demo: bool, model_flag: Option<String>, yolo: bool) -> Result<()> {
+async fn run(cli: Cli) -> Result<()> {
+    let Cli {
+        demo,
+        model: model_flag,
+        yolo,
+        session,
+        resume,
+        context_bytes,
+        max_steps,
+        ..
+    } = cli;
     let model = model_flag
         .or_else(|| std::env::var("CODELIGHT_MODEL").ok())
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
@@ -156,6 +176,26 @@ async fn run(demo: bool, model_flag: Option<String>, yolo: bool) -> Result<()> {
         let policy = PermissionPolicy::load(".codelight.toml");
         let mut agent = Agent::new(gateway, tools, approver, policy);
         agent.set_skills(&skills.advertise());
+        agent.configure_limits(max_steps, context_bytes)?;
+        let resuming = resume.is_some();
+        let session_path = match resume.or(session) {
+            Some(path) => path,
+            None => directories::ProjectDirs::from("", "", "codelight")
+                .ok_or_else(|| anyhow::anyhow!("cannot find a session directory; pass --session"))?
+                .data_local_dir()
+                .join("sessions")
+                .join(format!("{}.json", uuid::Uuid::new_v4())),
+        };
+        let (store, history) =
+            SessionStore::open(&session_path, &std::env::current_dir()?, resuming)?;
+        app.info(&format!("Session: {}", store.path().display()));
+        if resuming {
+            app.info(&format!(
+                "Resumed {} saved messages. Model and permissions use the current configuration.",
+                history.len()
+            ));
+        }
+        agent.attach_session(store, history)?;
         Some(agent)
     };
 

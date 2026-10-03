@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+vc-context = { workspace = true }
 vc-types = { workspace = true }
 vc-gateway = { workspace = true }
 vc-tools = { workspace = true }

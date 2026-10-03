@@ -2647,6 +2647,7 @@ dependencies = [
  "futures",
  "serde_json",
  "tokio",
+ "vc-context",
  "vc-gateway",
  "vc-skills",
  "vc-tools",
@@ -2660,11 +2661,14 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "directories",
  "dotenvy",
  "ratatui",
  "tokio",
  "tui-input",
+ "uuid",
  "vc-agent",
+ "vc-context",
  "vc-gateway",
  "vc-skills",
  "vc-tools",
@@ -2674,6 +2678,13 @@ dependencies = [
 [[package]]
 name = "vc-context"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "uuid",
+ "vc-types",
+]
 
 [[package]]
 name = "vc-gateway"
