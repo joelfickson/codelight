@@ -20,3 +20,6 @@ tui-input = { workspace = true }
 clap = { workspace = true }
 dotenvy = { workspace = true }
 async-trait = { workspace = true }
+context = { workspace = true }
+directories = { workspace = true }
+uuid = { workspace = true }

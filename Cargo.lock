@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "context",
  "dotenvy",
  "futures",
  "gateway",
@@ -297,6 +298,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "context",
+ "directories",
  "dotenvy",
  "gateway",
  "ratatui",
@@ -305,6 +308,7 @@ dependencies = [
  "tools",
  "tui-input",
  "types",
+ "uuid",
 ]
 
 [[package]]
@@ -330,6 +334,13 @@ dependencies = [
 [[package]]
 name = "context"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "types",
+ "uuid",
+]
 
 [[package]]
 name = "convert_case"
@@ -591,6 +602,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "eval"
+version = "0.1.0"
+dependencies = [
+ "agent",
+ "anyhow",
+ "async-trait",
+ "clap",
+ "context",
+ "futures",
+ "gateway",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tools",
+ "types",
+ "uuid",
 ]
 
 [[package]]

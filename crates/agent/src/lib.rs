@@ -1,4 +1,5 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
+use context::{DEFAULT_CONTEXT_BYTES, SessionStore, bounded_context, repair_interrupted_calls};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use gateway::GatewayClient;
@@ -50,6 +51,8 @@ pub struct Agent<B: ChatBackend = GatewayClient> {
     tools: ToolRegistry,
     history: Vec<Message>,
     max_steps: usize,
+    context_bytes: usize,
+    session: Option<SessionStore>,
     approver: Arc<dyn Approver>,
     policy: Mutex<PermissionPolicy>,
 }
@@ -85,6 +88,8 @@ impl<B: ChatBackend> Agent<B> {
             tools,
             history: vec![Message::system(SYSTEM_PROMPT)],
             max_steps: 20,
+            context_bytes: DEFAULT_CONTEXT_BYTES,
+            session: None,
             approver,
             policy: Mutex::new(policy),
         }
@@ -96,25 +101,79 @@ impl<B: ChatBackend> Agent<B> {
         }
     }
 
+    pub fn configure_limits(&mut self, max_steps: usize, context_bytes: usize) -> Result<()> {
+        anyhow::ensure!(
+            max_steps > 0 && context_bytes > 0,
+            "step and context limits must be positive"
+        );
+        self.max_steps = max_steps;
+        self.context_bytes = context_bytes;
+        Ok(())
+    }
+
+    pub fn attach_session(
+        &mut self,
+        session: SessionStore,
+        mut history: Vec<Message>,
+    ) -> Result<()> {
+        if !history.is_empty() {
+            history[0] = self.history[0].clone();
+            self.history = history;
+        }
+        self.session = Some(session);
+        self.checkpoint()
+    }
+
+    fn checkpoint(&self) -> Result<()> {
+        if let Some(session) = &self.session {
+            session.save(&self.history)?;
+        }
+        Ok(())
+    }
+
     pub async fn run(
         &mut self,
         user_message: &str,
         events: mpsc::Sender<AgentEvent>,
     ) -> Result<()> {
+        let result = self.run_turn(user_message, &events).await;
+        if result.is_err()
+            && let Err(error) = repair_interrupted_calls(&mut self.history)
+        {
+            events.send(AgentEvent::Error(error.to_string())).await.ok();
+        }
+        let checkpoint = self.checkpoint();
+        let result = result.and(checkpoint);
+        if let Err(error) = &result {
+            events.send(AgentEvent::Error(error.to_string())).await.ok();
+        }
+        events.send(AgentEvent::Done).await.ok();
+        result
+    }
+
+    async fn run_turn(
+        &mut self,
+        user_message: &str,
+        events: &mpsc::Sender<AgentEvent>,
+    ) -> Result<()> {
         self.history.push(Message::user(user_message));
+        self.checkpoint()?;
 
         let mut mutated_since_check = false;
         let mut nudged = false;
 
         for step in 0..self.max_steps {
             let definitions = self.tools.definitions();
-            let mut stream = self
-                .backend
-                .chat_stream(&self.history, &definitions)
-                .await?;
+            let (context, omitted) =
+                bounded_context(&self.history, &definitions, self.context_bytes)?;
+            if omitted > 0 && step == 0 {
+                events.send(AgentEvent::Info(format!("Omitted {omitted} earlier messages from model context; full session history is retained."))).await.ok();
+            }
+            let mut stream = self.backend.chat_stream(&context, &definitions).await?;
 
             let mut answer = String::new();
             let mut calls: Vec<ToolCall> = Vec::new();
+            let mut completed = false;
 
             while let Some(event) = stream.next().await {
                 match event {
@@ -136,12 +195,17 @@ impl<B: ChatBackend> Agent<B> {
                     }
                     StreamEvent::ToolCallEnd { .. } => {}
                     StreamEvent::Done { .. } => {
+                        completed = true;
                         events.send(AgentEvent::StepComplete).await.ok();
                     }
                     StreamEvent::Error(message) => {
-                        events.send(AgentEvent::Error(message)).await.ok();
+                        bail!("model stream failed: {message}");
                     }
                 }
+            }
+
+            if !completed {
+                bail!("model stream ended before completion; no pending tools were executed");
             }
 
             if calls.is_empty() {
@@ -153,12 +217,12 @@ impl<B: ChatBackend> Agent<B> {
                     ));
                     continue;
                 }
-                events.send(AgentEvent::Done).await.ok();
                 return Ok(());
             }
 
             self.history
                 .push(Message::assistant_tool_calls(calls.clone()));
+            self.checkpoint()?;
 
             for call in calls {
                 events
@@ -168,7 +232,7 @@ impl<B: ChatBackend> Agent<B> {
                     })
                     .await
                     .ok();
-                let (result, executed_ok) = self.execute(&call, &events).await;
+                let (result, executed_ok) = self.execute(&call, events).await;
                 if executed_ok {
                     match call.name.as_str() {
                         "edit_file" | "write_file" | "delete_file" | "move_file" => {
@@ -181,17 +245,11 @@ impl<B: ChatBackend> Agent<B> {
                     }
                 }
                 self.history.push(Message::tool_result(call.id, result));
+                self.checkpoint()?;
             }
         }
 
-        events
-            .send(AgentEvent::Error(
-                "reached max steps without a final answer".to_string(),
-            ))
-            .await
-            .ok();
-        events.send(AgentEvent::Done).await.ok();
-        Ok(())
+        bail!("reached max steps without a final answer")
     }
 
     async fn execute(&self, call: &ToolCall, events: &mpsc::Sender<AgentEvent>) -> (String, bool) {
@@ -620,5 +678,152 @@ mod tests {
         drain(rx).await;
         let seen = agent.backend.seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
+    }
+    struct FailOnceBackend {
+        failed: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl ChatBackend for FailOnceBackend {
+        async fn chat_stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[Value],
+        ) -> Result<BoxStream<'static, StreamEvent>> {
+            if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                bail!("connection unavailable");
+            }
+            Ok(Box::pin(futures::stream::iter(answer_turn("recovered"))))
+        }
+    }
+
+    #[tokio::test]
+    async fn request_failure_completes_and_next_turn_recovers() {
+        let mut agent = Agent::with_backend(
+            FailOnceBackend {
+                failed: std::sync::atomic::AtomicBool::new(false),
+            },
+            ToolRegistry::new(),
+            Arc::new(YesApprover),
+            empty_policy("recovery"),
+        );
+        let (tx, rx) = mpsc::channel(64);
+        assert!(agent.run("first", tx).await.is_err());
+        let events = drain(rx).await;
+        assert!(matches!(events.first(), Some(AgentEvent::Error(_))));
+        assert!(matches!(events.last(), Some(AgentEvent::Done)));
+        let (tx, rx) = mpsc::channel(64);
+        agent.run("try again", tx).await.unwrap();
+        let events = drain(rx).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Token(text) if text == "recovered"))
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_stream_never_executes_pending_tools() {
+        for error in [false, true] {
+            let mut turn = tool_call_turn("run_command", r#"{"command":"pwd"}"#);
+            turn.pop();
+            if error {
+                turn.push(StreamEvent::Error("connection lost".into()));
+            }
+            let backend = StubBackend::new(vec![turn]);
+            let mut tools = ToolRegistry::new();
+            tools.register(Box::new(RunCommand));
+            let mut agent = Agent::with_backend(
+                backend,
+                tools,
+                Arc::new(YesApprover),
+                empty_policy("partial"),
+            );
+            let (tx, rx) = mpsc::channel(64);
+            assert!(agent.run("run", tx).await.is_err());
+            let events = drain(rx).await;
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::ToolStarted { .. }))
+            );
+            assert!(matches!(events.last(), Some(AgentEvent::Done)));
+            assert_eq!(agent.history.len(), 2);
+        }
+    }
+    #[tokio::test]
+    async fn checkpoint_survives_tool_execution_then_model_failure() {
+        let directory = std::env::temp_dir().join(format!(
+            "vc-agent-resume-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("session.json");
+        let (store, history) = SessionStore::open(&path, &directory, false).unwrap();
+        let backend = StubBackend::new(vec![
+            tool_call_turn("run_command", r#"{"command":"pwd"}"#),
+            vec![StreamEvent::Error("offline".into())],
+        ]);
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(RunCommand));
+        let mut agent = Agent::with_backend(
+            backend,
+            tools,
+            Arc::new(YesApprover),
+            empty_policy("checkpoint"),
+        );
+        agent.attach_session(store, history).unwrap();
+        let (tx, rx) = mpsc::channel(64);
+        assert!(agent.run("inspect", tx).await.is_err());
+        assert!(
+            drain(rx)
+                .await
+                .iter()
+                .any(|event| matches!(event, AgentEvent::ToolFinished { ok: true, .. }))
+        );
+        drop(agent);
+        let (store, history) = SessionStore::open(&path, &directory, true).unwrap();
+        assert_eq!(history.last().unwrap().role, types::Role::Tool);
+        assert!(history.last().unwrap().content.contains("exit_code"));
+        let mut resumed = Agent::with_backend(
+            StubBackend::new(vec![answer_turn("continued")]),
+            ToolRegistry::new(),
+            Arc::new(YesApprover),
+            empty_policy("resumed"),
+        );
+        resumed.set_skills("current skills");
+        resumed.attach_session(store, history).unwrap();
+        let (tx, rx) = mpsc::channel(64);
+        resumed.run("continue", tx).await.unwrap();
+        drain(rx).await;
+        {
+            let seen = resumed.backend.seen.lock().unwrap();
+            assert!(seen[0][0].content.contains("current skills"));
+            assert!(
+                seen[0]
+                    .iter()
+                    .any(|message| message.role == types::Role::Tool)
+            );
+        }
+        drop(resumed);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn context_overflow_completes_without_calling_backend() {
+        let mut agent = Agent::with_backend(
+            StubBackend::new(vec![]),
+            ToolRegistry::new(),
+            Arc::new(YesApprover),
+            empty_policy("overflow"),
+        );
+        agent.configure_limits(20, 1).unwrap();
+        let (tx, rx) = mpsc::channel(64);
+        assert!(agent.run("hello", tx).await.is_err());
+        assert!(agent.backend.seen.lock().unwrap().is_empty());
+        assert!(matches!(drain(rx).await.last(), Some(AgentEvent::Done)));
     }
 }

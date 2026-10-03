@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use async_stream::stream;
 use eventsource_stream::Eventsource;
@@ -182,7 +183,11 @@ impl GatewayClient {
             model.ok_or(GatewayError::MissingModel)?
         };
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .read_timeout(Duration::from_secs(60))
+                .timeout(Duration::from_secs(120))
+                .build()?,
             api_key,
             model,
             base_url,
@@ -208,7 +213,7 @@ impl GatewayClient {
     }
 
     pub async fn list_models(&self) -> Result<Vec<String>, GatewayError> {
-        let response = self.request(reqwest::Method::GET, "models").send().await?;
+        let response = send_with_retry(self.request(reqwest::Method::GET, "models")).await?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
@@ -230,11 +235,11 @@ impl GatewayClient {
             max_tokens: 1024,
         };
 
-        let response = self
-            .request(reqwest::Method::POST, "chat/completions")
-            .json(&request)
-            .send()
-            .await?;
+        let response = send_with_retry(
+            self.request(reqwest::Method::POST, "chat/completions")
+                .json(&request),
+        )
+        .await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -272,11 +277,11 @@ impl GatewayClient {
             tools: if tools.is_empty() { None } else { Some(tools) },
         };
 
-        let response = self
-            .request(reqwest::Method::POST, "chat/completions")
-            .json(&request)
-            .send()
-            .await?;
+        let response = send_with_retry(
+            self.request(reqwest::Method::POST, "chat/completions")
+                .json(&request),
+        )
+        .await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -287,79 +292,118 @@ impl GatewayClient {
             });
         }
 
-        let mut events = response.bytes_stream().eventsource();
+        Ok(decode_stream(response))
+    }
+}
 
-        let stream = stream! {
-            let mut tool_ids: HashMap<u32, String> = HashMap::new();
+fn decode_stream(response: reqwest::Response) -> BoxStream<'static, StreamEvent> {
+    let mut events = response.bytes_stream().eventsource();
 
-            while let Some(event) = events.next().await {
-                let event = match event {
-                    Ok(event) => event,
-                    Err(err) => {
-                        yield StreamEvent::Error(err.to_string());
-                        break;
-                    }
-                };
+    let stream = stream! {
+        let mut tool_ids: HashMap<u32, String> = HashMap::new();
+        let mut finished = false;
+        let mut usage = Usage::default();
 
-                if event.data == "[DONE]" {
-                    break;
+        while let Some(event) = events.next().await {
+            let event = match event {
+                Ok(event) => event,
+                Err(err) => {
+                    yield StreamEvent::Error(err.to_string());
+                    return;
                 }
+            };
 
-                let chunk: ChatChunk = match serde_json::from_str(&event.data) {
-                    Ok(chunk) => chunk,
-                    Err(err) => {
-                        yield StreamEvent::Error(format!("bad chunk: {err}"));
-                        continue;
-                    }
-                };
+            if event.data == "[DONE]" {
+                break;
+            }
 
-                if let Some(usage) = chunk.usage {
-                    yield StreamEvent::Done { usage: usage.into() };
+            let chunk: ChatChunk = match serde_json::from_str(&event.data) {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    yield StreamEvent::Error(format!("bad chunk: {err}"));
+                    return;
                 }
+            };
 
-                let Some(choice) = chunk.choices.into_iter().next() else {
-                    continue;
-                };
+            if let Some(reported) = chunk.usage {
+                usage = reported.into();
+            }
 
-                if let Some(content) = choice.delta.content
-                    && !content.is_empty()
-                {
-                    yield StreamEvent::Token(content);
-                }
+            let Some(choice) = chunk.choices.into_iter().next() else {
+                continue;
+            };
 
-                if let Some(tool_calls) = choice.delta.tool_calls {
-                    for tc in tool_calls {
-                        let ToolCallDelta { index, id, function } = tc;
-                        if let Some(function) = function {
-                            if let (Some(id), Some(name)) = (id, function.name) {
-                                tool_ids.insert(index, id.clone());
-                                yield StreamEvent::ToolCallStart { id, name };
-                            }
-                            if let Some(arguments) = function.arguments
-                                && !arguments.is_empty()
-                                && let Some(existing_id) = tool_ids.get(&index)
-                            {
-                                yield StreamEvent::ToolCallArgs {
-                                    id: existing_id.clone(),
-                                    chunk: arguments,
-                                };
-                            }
+            if let Some(content) = choice.delta.content
+                && !content.is_empty()
+            {
+                yield StreamEvent::Token(content);
+            }
+
+            if let Some(tool_calls) = choice.delta.tool_calls {
+                for tc in tool_calls {
+                    let ToolCallDelta { index, id, function } = tc;
+                    if let Some(function) = function {
+                        if let (Some(id), Some(name)) = (id, function.name) {
+                            tool_ids.insert(index, id.clone());
+                            yield StreamEvent::ToolCallStart { id, name };
+                        }
+                        if let Some(arguments) = function.arguments
+                            && !arguments.is_empty()
+                            && let Some(existing_id) = tool_ids.get(&index)
+                        {
+                            yield StreamEvent::ToolCallArgs {
+                                id: existing_id.clone(),
+                                chunk: arguments,
+                            };
                         }
                     }
                 }
+            }
 
-                if let Some(reason) = choice.finish_reason
-                    && reason == "tool_calls"
-                {
-                    for (_, id) in tool_ids.drain() {
-                        yield StreamEvent::ToolCallEnd { id };
-                    }
+            if let Some(reason) = choice.finish_reason {
+                if !matches!(reason.as_str(), "stop" | "tool_calls") {
+                    yield StreamEvent::Error(format!("model stopped with finish reason: {reason}"));
+                    return;
+                }
+                finished = true;
+                for (_, id) in tool_ids.drain() {
+                    yield StreamEvent::ToolCallEnd { id };
                 }
             }
-        };
+        }
+        if finished {
+            yield StreamEvent::Done { usage };
+        } else {
+            yield StreamEvent::Error("model stream ended without a finish reason".into());
+        }
+    };
 
-        Ok(stream.boxed())
+    stream.boxed()
+}
+
+async fn send_with_retry(
+    request: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, GatewayError> {
+    for attempt in 0..3 {
+        let response = request
+            .try_clone()
+            .expect("JSON request is cloneable")
+            .send()
+            .await;
+        let retry = match &response {
+            Ok(response) => matches!(
+                response.status().as_u16(),
+                408 | 429 | 500 | 502 | 503 | 504
+            ),
+            Err(error) => error.is_connect() || error.is_timeout(),
+        };
+        if !retry || attempt == 2 {
+            return Ok(response?);
+        }
+        drop(response);
+        tokio::time::sleep(Duration::from_millis(250 * (1 << attempt))).await;
     }
+    unreachable!()
 }
 
 #[cfg(test)]
@@ -515,5 +559,108 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn server(responses: Vec<(u16, String)>) -> (String, tokio::task::JoinHandle<usize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let mut count = 0;
+            for (status, body) in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let mut received = Vec::new();
+                while !received.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let count = socket.read(&mut request).await.unwrap();
+                    assert!(count > 0);
+                    received.extend_from_slice(&request[..count]);
+                }
+                let response = format!(
+                    "HTTP/1.1 {status} Test\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+                count += 1;
+            }
+            count
+        });
+        (url, task)
+    }
+
+    async fn decode(body: &str) -> Vec<StreamEvent> {
+        let (url, task) = server(vec![(200, body.into())]).await;
+        let response = reqwest::get(url).await.unwrap();
+        let events = decode_stream(response).collect().await;
+        task.await.unwrap();
+        events
+    }
+
+    #[tokio::test]
+    async fn finish_without_usage_completes_once() {
+        let events = decode("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n").await;
+        assert!(matches!(events.first(), Some(StreamEvent::Token(text)) if text == "ok"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, StreamEvent::Done { .. }))
+                .count(),
+            1
+        );
+        assert!(matches!(events.last(), Some(StreamEvent::Done { .. })));
+    }
+
+    #[tokio::test]
+    async fn truncated_malformed_and_length_limited_streams_fail() {
+        for body in [
+            "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n",
+            "data: invalid\n\ndata: [DONE]\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ] {
+            let events = decode(body).await;
+            assert!(matches!(events.last(), Some(StreamEvent::Error(_))));
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, StreamEvent::Done { .. }))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn retries_transient_responses_but_not_auth_errors() {
+        let (url, task) = server(vec![
+            (503, String::new()),
+            (429, String::new()),
+            (200, String::new()),
+        ])
+        .await;
+        let response = send_with_retry(reqwest::Client::new().get(url))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(task.await.unwrap(), 3);
+        let (url, task) = server(vec![(401, String::new())]).await;
+        let response = send_with_retry(reqwest::Client::new().get(url))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 401);
+        assert_eq!(task.await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn stops_after_three_transient_responses() {
+        let (url, task) = server(vec![(503, String::new()); 3]).await;
+        let response = send_with_retry(reqwest::Client::new().get(url))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 503);
+        assert_eq!(task.await.unwrap(), 3);
     }
 }
