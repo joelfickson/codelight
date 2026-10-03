@@ -4,7 +4,7 @@
 
 **Goal:** Gate destructive tool calls behind interactive user approval with a persisted allowlist, nudge the agent to verify mutations before finishing, and frame fetched web content as untrusted.
 
-**Architecture:** A `PermissionPolicy` in `vc-tools` decides which shell commands are pre-approved; gated tools describe the risky action via a new `Tool::approval_request` method; `vc-agent` consults an injected `Approver` trait before executing, keeping the renderer seam intact; `vc-cli` implements the approver as a TUI modal bridged over an mpsc + oneshot channel because the `Agent` lives inside a spawned task while running. A minimal `ChatBackend` trait makes the loop testable with a scripted stub.
+**Architecture:** A `PermissionPolicy` in `tools` decides which shell commands are pre-approved; gated tools describe the risky action via a new `Tool::approval_request` method; `agent` consults an injected `Approver` trait before executing, keeping the renderer seam intact; `cli` implements the approver as a TUI modal bridged over an mpsc + oneshot channel because the `Agent` lives inside a spawned task while running. A minimal `ChatBackend` trait makes the loop testable with a scripted stub.
 
 **Tech Stack:** Rust edition 2024, tokio, async-trait, toml_edit (new workspace dep), ratatui.
 
@@ -14,24 +14,24 @@
 
 - No code comments, docstrings, or doc comments anywhere. No emojis. No em dashes.
 - Rust edition 2024, `resolver = "3"`. New deps pinned once in `[workspace.dependencies]`, consumed with `{ workspace = true }`.
-- Dependency direction: everyone may depend on `vc-types`; `vc-agent` depends on `vc-gateway` and `vc-tools`; never the reverse.
+- Dependency direction: everyone may depend on `types`; `agent` depends on `gateway` and `tools`; never the reverse.
 - Before every commit: `cargo fmt`, `cargo clippy --workspace --all-targets` clean, `cargo test --workspace` green.
 - The `AgentEvent` bus stays `Clone`; approval replies never ride it.
 - Command allowlist matching is token-based prefix with a trailing `*` meaning zero or more extra tokens; commands containing shell metacharacters (`;`, `|`, `&`, `` ` ``, `$`, `(`, `)`, `<`, `>`) never auto-match any pattern.
 
 ---
 
-### Task 1: Approval shapes in vc-types
+### Task 1: Approval shapes in types
 
 **Files:**
-- Modify: `crates/vc-types/src/lib.rs`
+- Modify: `crates/types/src/lib.rs`
 
 **Interfaces:**
-- Produces: `vc_types::ApprovalRequest { tool: String, action: String, suggested_pattern: Option<String> }`, `vc_types::Decision { AllowOnce, AllowAlways, Deny }`. Every later task uses these exact names.
+- Produces: `types::ApprovalRequest { tool: String, action: String, suggested_pattern: Option<String> }`, `types::Decision { AllowOnce, AllowAlways, Deny }`. Every later task uses these exact names.
 
 - [ ] **Step 1: Add the shapes**
 
-Append to `crates/vc-types/src/lib.rs` (above the `#[cfg(test)]` module):
+Append to `crates/types/src/lib.rs` (above the `#[cfg(test)]` module):
 
 ```rust
 #[derive(Debug, Clone)]
@@ -51,32 +51,32 @@ pub enum Decision {
 
 - [ ] **Step 2: Verify it compiles**
 
-Run: `cargo check -p vc-types`
+Run: `cargo check -p types`
 Expected: clean.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add crates/vc-types/src/lib.rs
+git add crates/types/src/lib.rs
 git commit -m "feat(types): add ApprovalRequest and Decision shapes"
 ```
 
 ---
 
-### Task 2: PermissionPolicy in vc-tools
+### Task 2: PermissionPolicy in tools
 
 **Files:**
-- Create: `crates/vc-tools/src/policy.rs`
-- Modify: `crates/vc-tools/src/lib.rs` (add `mod policy; pub use policy::PermissionPolicy;`)
+- Create: `crates/tools/src/policy.rs`
+- Modify: `crates/tools/src/lib.rs` (add `mod policy; pub use policy::PermissionPolicy;`)
 - Modify: `Cargo.toml` (workspace: add `toml_edit = "0.22"`)
-- Modify: `crates/vc-tools/Cargo.toml` (add `toml_edit = { workspace = true }`)
+- Modify: `crates/tools/Cargo.toml` (add `toml_edit = { workspace = true }`)
 
 **Interfaces:**
 - Produces: `PermissionPolicy::load(config_path: impl Into<PathBuf>) -> Self`, `fn allows(&self, command: &str) -> bool`, `fn persist_allow(&mut self, pattern: &str) -> anyhow::Result<()>`, `fn suggested_pattern(command: &str) -> Option<String>`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `crates/vc-tools/src/policy.rs` with the tests first:
+Create `crates/tools/src/policy.rs` with the tests first:
 
 ```rust
 use std::path::PathBuf;
@@ -93,7 +93,7 @@ mod tests {
     use super::*;
 
     fn temp_config(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("vc_policy_{name}.toml"))
+        std::env::temp_dir().join(format!("policy_{name}.toml"))
     }
 
     #[test]
@@ -191,7 +191,7 @@ mod tests {
 }
 ```
 
-Wire the module in `crates/vc-tools/src/lib.rs` near the top:
+Wire the module in `crates/tools/src/lib.rs` near the top:
 
 ```rust
 mod policy;
@@ -204,7 +204,7 @@ Add to `[workspace.dependencies]` in the root `Cargo.toml`:
 toml_edit = "0.22"
 ```
 
-Add to `crates/vc-tools/Cargo.toml` dependencies:
+Add to `crates/tools/Cargo.toml` dependencies:
 
 ```toml
 toml_edit = { workspace = true }
@@ -212,12 +212,12 @@ toml_edit = { workspace = true }
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test -p vc-tools policy -- --nocapture`
+Run: `cargo test -p tools policy -- --nocapture`
 Expected: compile errors for missing methods (`load`, `allows`, `persist_allow`, `suggested_pattern`).
 
 - [ ] **Step 3: Implement PermissionPolicy**
 
-Fill in `crates/vc-tools/src/policy.rs` above the tests:
+Fill in `crates/tools/src/policy.rs` above the tests:
 
 ```rust
 const BUILTIN_PATTERNS: [&str; 16] = [
@@ -316,13 +316,13 @@ fn pattern_matches(pattern: &str, command: &str) -> bool {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test -p vc-tools policy`
+Run: `cargo test -p tools policy`
 Expected: all 9 tests PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add Cargo.toml crates/vc-tools/Cargo.toml crates/vc-tools/src/policy.rs crates/vc-tools/src/lib.rs Cargo.lock
+git add Cargo.toml crates/tools/Cargo.toml crates/tools/src/policy.rs crates/tools/src/lib.rs Cargo.lock
 git commit -m "feat(tools): add PermissionPolicy with allowlist matching and persistence"
 ```
 
@@ -331,20 +331,20 @@ git commit -m "feat(tools): add PermissionPolicy with allowlist matching and per
 ### Task 3: approval_request on gated tools
 
 **Files:**
-- Modify: `crates/vc-tools/src/lib.rs`
-- Modify: `crates/vc-tools/Cargo.toml` (add `vc-types = { workspace = true }`)
+- Modify: `crates/tools/src/lib.rs`
+- Modify: `crates/tools/Cargo.toml` (add `types = { workspace = true }`)
 
 **Interfaces:**
-- Consumes: `PermissionPolicy` (Task 2), `vc_types::ApprovalRequest` (Task 1).
+- Consumes: `PermissionPolicy` (Task 2), `types::ApprovalRequest` (Task 1).
 - Produces: `Tool::approval_request(&self, args: &Value, policy: &PermissionPolicy) -> Option<ApprovalRequest>` default method returning `None`, overridden by `RunCommand`, `DeleteFile`, `MoveFile`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to the `tests` module in `crates/vc-tools/src/lib.rs`:
+Append to the `tests` module in `crates/tools/src/lib.rs`:
 
 ```rust
     fn empty_policy(name: &str) -> PermissionPolicy {
-        PermissionPolicy::load(std::env::temp_dir().join(format!("vc_gate_{name}.toml")))
+        PermissionPolicy::load(std::env::temp_dir().join(format!("gate_{name}.toml")))
     }
 
     #[test]
@@ -380,7 +380,7 @@ Append to the `tests` module in `crates/vc-tools/src/lib.rs`:
     #[test]
     fn move_file_requests_approval_only_when_destination_exists() {
         let policy = empty_policy("move");
-        let existing = std::env::temp_dir().join("vc_gate_move_dest.txt");
+        let existing = std::env::temp_dir().join("gate_move_dest.txt");
         std::fs::write(&existing, "x").unwrap();
         let request = MoveFile.approval_request(
             &serde_json::json!({"from": "a.txt", "to": existing.to_str().unwrap()}),
@@ -389,7 +389,7 @@ Append to the `tests` module in `crates/vc-tools/src/lib.rs`:
         assert!(request.is_some());
         assert!(request.unwrap().action.starts_with("overwrite "));
         let fresh = MoveFile.approval_request(
-            &serde_json::json!({"from": "a.txt", "to": "/nonexistent/vc_gate_nope.txt"}),
+            &serde_json::json!({"from": "a.txt", "to": "/nonexistent/gate_nope.txt"}),
             &policy,
         );
         assert!(fresh.is_none());
@@ -414,17 +414,17 @@ Append to the `tests` module in `crates/vc-tools/src/lib.rs`:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test -p vc-tools approval`
+Run: `cargo test -p tools approval`
 Expected: compile error, `approval_request` not found.
 
 - [ ] **Step 3: Implement**
 
-Add `vc-types = { workspace = true }` to `crates/vc-tools/Cargo.toml`.
+Add `types = { workspace = true }` to `crates/tools/Cargo.toml`.
 
-In `crates/vc-tools/src/lib.rs`, import the type and extend the trait:
+In `crates/tools/src/lib.rs`, import the type and extend the trait:
 
 ```rust
-use vc_types::ApprovalRequest;
+use types::ApprovalRequest;
 ```
 
 Add to the `Tool` trait after `execute`:
@@ -483,13 +483,13 @@ Add to `impl Tool for MoveFile`:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test -p vc-tools`
+Run: `cargo test -p tools`
 Expected: all tests PASS, including the 5 new ones.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/vc-tools/Cargo.toml crates/vc-tools/src/lib.rs Cargo.lock
+git add crates/tools/Cargo.toml crates/tools/src/lib.rs Cargo.lock
 git commit -m "feat(tools): gate run_command, delete_file, and overwriting moves behind approval_request"
 ```
 
@@ -498,7 +498,7 @@ git commit -m "feat(tools): gate run_command, delete_file, and overwriting moves
 ### Task 4: Untrusted content framing on web_fetch
 
 **Files:**
-- Modify: `crates/vc-tools/src/lib.rs` (WebFetch::execute and tests)
+- Modify: `crates/tools/src/lib.rs` (WebFetch::execute and tests)
 
 **Interfaces:**
 - Produces: `web_fetch` result `body` field wrapped in untrusted-content markers. No signature changes.
@@ -525,12 +525,12 @@ Append to the `tests` module:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p vc-tools frame_untrusted`
+Run: `cargo test -p tools frame_untrusted`
 Expected: compile error, `frame_untrusted` not found.
 
 - [ ] **Step 3: Implement**
 
-Add near `cap_output` in `crates/vc-tools/src/lib.rs`:
+Add near `cap_output` in `crates/tools/src/lib.rs`:
 
 ```rust
 fn frame_untrusted(url: &str, body: &str) -> String {
@@ -555,13 +555,13 @@ to:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test -p vc-tools`
+Run: `cargo test -p tools`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/vc-tools/src/lib.rs
+git add crates/tools/src/lib.rs
 git commit -m "feat(tools): frame web_fetch bodies as untrusted external content"
 ```
 
@@ -570,9 +570,9 @@ git commit -m "feat(tools): frame web_fetch bodies as untrusted external content
 ### Task 5: ChatBackend trait and a testable Agent
 
 **Files:**
-- Modify: `crates/vc-agent/src/lib.rs`
-- Modify: `crates/vc-agent/Cargo.toml` (add `async-trait = { workspace = true }`)
-- Modify: `crates/vc-cli/src/main.rs` (constructor call site, Task 6 finishes this)
+- Modify: `crates/agent/src/lib.rs`
+- Modify: `crates/agent/Cargo.toml` (add `async-trait = { workspace = true }`)
+- Modify: `crates/cli/src/main.rs` (constructor call site, Task 6 finishes this)
 
 **Interfaces:**
 - Consumes: `GatewayClient::chat_stream(&self, &[Message], &[Value]) -> Result<BoxStream<'static, StreamEvent>, GatewayError>`.
@@ -580,7 +580,7 @@ git commit -m "feat(tools): frame web_fetch bodies as untrusted external content
 
 - [ ] **Step 1: Write the failing test**
 
-Create the test scaffolding at the bottom of `crates/vc-agent/src/lib.rs`:
+Create the test scaffolding at the bottom of `crates/agent/src/lib.rs`:
 
 ```rust
 #[cfg(test)]
@@ -588,7 +588,7 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::sync::Mutex;
-    use vc_tools::ToolRegistry;
+    use tools::ToolRegistry;
 
     pub struct StubBackend {
         turns: Mutex<VecDeque<Vec<StreamEvent>>>,
@@ -624,7 +624,7 @@ mod tests {
 
     fn done() -> StreamEvent {
         StreamEvent::Done {
-            usage: vc_types::Usage::default(),
+            usage: types::Usage::default(),
         }
     }
 
@@ -660,18 +660,18 @@ mod tests {
 }
 ```
 
-`Message` needs `Clone` for `messages.to_vec()`; if it does not already derive it, add `Clone` to its derive list in `vc-types`.
+`Message` needs `Clone` for `messages.to_vec()`; if it does not already derive it, add `Clone` to its derive list in `types`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p vc-agent`
+Run: `cargo test -p agent`
 Expected: compile errors: no `ChatBackend`, no `with_backend`.
 
 - [ ] **Step 3: Implement the trait and generic Agent**
 
-Add `async-trait = { workspace = true }` to `crates/vc-agent/Cargo.toml`.
+Add `async-trait = { workspace = true }` to `crates/agent/Cargo.toml`.
 
-In `crates/vc-agent/src/lib.rs`, add imports and the trait:
+In `crates/agent/src/lib.rs`, add imports and the trait:
 
 ```rust
 use futures::stream::BoxStream;
@@ -738,12 +738,12 @@ Move `set_skills`, `run`, and `execute` into the `impl<B: ChatBackend>` block, r
 - [ ] **Step 4: Run the full workspace to verify nothing broke**
 
 Run: `cargo test --workspace && cargo clippy --workspace --all-targets`
-Expected: all green. `vc-cli` compiles unchanged because `Agent` still defaults to `GatewayClient`.
+Expected: all green. `cli` compiles unchanged because `Agent` still defaults to `GatewayClient`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/vc-agent/Cargo.toml crates/vc-agent/src/lib.rs crates/vc-types/src/lib.rs Cargo.lock
+git add crates/agent/Cargo.toml crates/agent/src/lib.rs crates/types/src/lib.rs Cargo.lock
 git commit -m "feat(agent): put streaming behind ChatBackend so the loop is testable"
 ```
 
@@ -752,8 +752,8 @@ git commit -m "feat(agent): put streaming behind ChatBackend so the loop is test
 ### Task 6: Approver gating in the agent loop
 
 **Files:**
-- Modify: `crates/vc-agent/src/lib.rs`
-- Modify: `crates/vc-cli/src/main.rs` (constructor call site only; the real TUI approver is Task 8)
+- Modify: `crates/agent/src/lib.rs`
+- Modify: `crates/cli/src/main.rs` (constructor call site only; the real TUI approver is Task 8)
 
 **Interfaces:**
 - Consumes: `Tool::approval_request` (Task 3), `PermissionPolicy` (Task 2), `Decision`/`ApprovalRequest` (Task 1).
@@ -761,11 +761,11 @@ git commit -m "feat(agent): put streaming behind ChatBackend so the loop is test
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to the `tests` module in `crates/vc-agent/src/lib.rs`:
+Add to the `tests` module in `crates/agent/src/lib.rs`:
 
 ```rust
     use std::sync::Arc;
-    use vc_tools::{PermissionPolicy, RunCommand};
+    use tools::{PermissionPolicy, RunCommand};
 
     struct ScriptedApprover {
         decision: Decision,
@@ -790,7 +790,7 @@ Add to the `tests` module in `crates/vc-agent/src/lib.rs`:
     }
 
     fn empty_policy(name: &str) -> PermissionPolicy {
-        PermissionPolicy::load(std::env::temp_dir().join(format!("vc_agent_{name}.toml")))
+        PermissionPolicy::load(std::env::temp_dir().join(format!("agent_{name}.toml")))
     }
 
     fn tool_call_turn(name: &str, arguments: &str) -> Vec<StreamEvent> {
@@ -887,21 +887,21 @@ Add to the `tests` module in `crates/vc-agent/src/lib.rs`:
     }
 ```
 
-The `plain_answer` test from Task 5 gains the two new constructor arguments: `Agent::with_backend(backend, ToolRegistry::new(), Arc::new(YesApprover), empty_policy("plain"))`. Update it in this step. If `Message.content` is not a public field or not an `Option<String>`, adjust the assertions to match its actual shape in `vc-types` (check the struct; use whatever accessor exists). `agent.backend` requires the field to be visible to the tests module; since tests live in the same file, the private field is accessible.
+The `plain_answer` test from Task 5 gains the two new constructor arguments: `Agent::with_backend(backend, ToolRegistry::new(), Arc::new(YesApprover), empty_policy("plain"))`. Update it in this step. If `Message.content` is not a public field or not an `Option<String>`, adjust the assertions to match its actual shape in `types` (check the struct; use whatever accessor exists). `agent.backend` requires the field to be visible to the tests module; since tests live in the same file, the private field is accessible.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test -p vc-agent`
+Run: `cargo test -p agent`
 Expected: compile errors: no `Approver`, no `YesApprover`, wrong constructor arity.
 
 - [ ] **Step 3: Implement**
 
-In `crates/vc-agent/src/lib.rs`:
+In `crates/agent/src/lib.rs`:
 
 ```rust
 use std::sync::{Arc, Mutex};
-use vc_tools::PermissionPolicy;
-use vc_types::{ApprovalRequest, Decision};
+use tools::PermissionPolicy;
+use types::{ApprovalRequest, Decision};
 
 #[async_trait::async_trait]
 pub trait Approver: Send + Sync {
@@ -1033,7 +1033,7 @@ The call site in `run` becomes:
 
 The `Mutex` around the policy is `std::sync::Mutex`; both lock sites drop the guard before any `.await`.
 
-Update `crates/vc-cli/src/main.rs` so it compiles: add imports `use std::sync::Arc; use vc_agent::YesApprover; use vc_tools::PermissionPolicy;` and change the construction line to:
+Update `crates/cli/src/main.rs` so it compiles: add imports `use std::sync::Arc; use agent::YesApprover; use tools::PermissionPolicy;` and change the construction line to:
 
 ```rust
         let policy = PermissionPolicy::load(".codelight.toml");
@@ -1050,7 +1050,7 @@ Expected: all green.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/vc-agent/src/lib.rs crates/vc-cli/src/main.rs
+git add crates/agent/src/lib.rs crates/cli/src/main.rs
 git commit -m "feat(agent): consult an injected Approver before executing gated tools"
 ```
 
@@ -1059,7 +1059,7 @@ git commit -m "feat(agent): consult an injected Approver before executing gated 
 ### Task 7: Verify nudge
 
 **Files:**
-- Modify: `crates/vc-agent/src/lib.rs`
+- Modify: `crates/agent/src/lib.rs`
 
 **Interfaces:**
 - Consumes: the `(String, bool)` return of `execute` (Task 6).
@@ -1075,7 +1075,7 @@ Add to the `tests` module:
     }
 
     #[async_trait::async_trait]
-    impl vc_tools::Tool for NamedStubTool {
+    impl tools::Tool for NamedStubTool {
         fn name(&self) -> &str {
             self.tool_name
         }
@@ -1158,7 +1158,7 @@ Add to the `tests` module:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test -p vc-agent nudge`
+Run: `cargo test -p agent nudge`
 Expected: `finishing_after_mutation_without_check_triggers_one_nudge` FAILS (seen.len() is 2, no third turn). The other two may already pass; that is fine.
 
 - [ ] **Step 3: Implement the nudge**
@@ -1212,7 +1212,7 @@ Expected: all green.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/vc-agent/src/lib.rs
+git add crates/agent/src/lib.rs
 git commit -m "feat(agent): nudge once when a turn mutates files without running checks"
 ```
 
@@ -1221,9 +1221,9 @@ git commit -m "feat(agent): nudge once when a turn mutates files without running
 ### Task 8: TUI approval modal and --yolo
 
 **Files:**
-- Modify: `crates/vc-cli/src/main.rs`
-- Modify: `crates/vc-cli/src/app.rs`
-- Modify: `crates/vc-cli/Cargo.toml` (add `async-trait = { workspace = true }`)
+- Modify: `crates/cli/src/main.rs`
+- Modify: `crates/cli/src/app.rs`
+- Modify: `crates/cli/Cargo.toml` (add `async-trait = { workspace = true }`)
 
 **Interfaces:**
 - Consumes: `Approver`, `Decision`, `ApprovalRequest`, `YesApprover` (Tasks 1 and 6).
@@ -1231,14 +1231,14 @@ git commit -m "feat(agent): nudge once when a turn mutates files without running
 
 - [ ] **Step 1: Add the approver bridge in main.rs**
 
-Add `async-trait = { workspace = true }` to `crates/vc-cli/Cargo.toml`.
+Add `async-trait = { workspace = true }` to `crates/cli/Cargo.toml`.
 
-In `crates/vc-cli/src/main.rs`:
+In `crates/cli/src/main.rs`:
 
 ```rust
 use tokio::sync::oneshot;
-use vc_agent::{Approver, YesApprover};
-use vc_types::{ApprovalRequest, Decision};
+use agent::{Approver, YesApprover};
+use types::{ApprovalRequest, Decision};
 
 pub struct PendingApproval {
     pub request: ApprovalRequest,
@@ -1324,7 +1324,7 @@ Add a key-handling branch immediately before the `if app.picker_is_open()` branc
 
 - [ ] **Step 2: Add the modal state and rendering in app.rs**
 
-Read `crates/vc-cli/src/app.rs` first and mirror the `/model` picker's existing overlay pattern exactly: same centering helper, same border style, same key-hint footer format. Add to `App`:
+Read `crates/cli/src/app.rs` first and mirror the `/model` picker's existing overlay pattern exactly: same centering helper, same border style, same key-hint footer format. Add to `App`:
 
 ```rust
     approval: Option<crate::PendingApproval>,
@@ -1348,7 +1348,7 @@ Methods (in the style of the existing picker methods):
             .unwrap_or(false)
     }
 
-    pub fn resolve_approval(&mut self, decision: vc_types::Decision) {
+    pub fn resolve_approval(&mut self, decision: types::Decision) {
         if let Some(pending) = self.approval.take() {
             pending.respond.send(decision).ok();
         }
@@ -1366,13 +1366,13 @@ Expected: green. The app.rs unit tests still pass.
 
 - [ ] **Step 4: Manual smoke test**
 
-Run: `cargo run -p vc-cli` in a scratch directory, then ask the agent to `run the command: touch /tmp/vc_trust_smoke`.
-Expected: a modal appears showing `touch /tmp/vc_trust_smoke` with allow once / always allow (`touch *`) / deny. Press `y`; the file exists afterward. Ask again and press `a`; `.codelight.toml` in the scratch directory now contains `touch *` and a third request does not prompt. Ask it to delete the file; the modal shows `delete /tmp/vc_trust_smoke` with no always option. Press `n`; the agent reports the user declined. Then run `cargo run -p vc-cli -- --yolo` and confirm no modal appears for the same request.
+Run: `cargo run -p cli` in a scratch directory, then ask the agent to `run the command: touch /tmp/trust_smoke`.
+Expected: a modal appears showing `touch /tmp/trust_smoke` with allow once / always allow (`touch *`) / deny. Press `y`; the file exists afterward. Ask again and press `a`; `.codelight.toml` in the scratch directory now contains `touch *` and a third request does not prompt. Ask it to delete the file; the modal shows `delete /tmp/trust_smoke` with no always option. Press `n`; the agent reports the user declined. Then run `cargo run -p cli -- --yolo` and confirm no modal appears for the same request.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/vc-cli/Cargo.toml crates/vc-cli/src/main.rs crates/vc-cli/src/app.rs Cargo.lock
+git add crates/cli/Cargo.toml crates/cli/src/main.rs crates/cli/src/app.rs Cargo.lock
 git commit -m "feat(cli): approval modal with allow once, always allow, deny, and a --yolo flag"
 ```
 
