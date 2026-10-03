@@ -72,7 +72,7 @@ Resume uses the current system instructions, selected model, skills, and permiss
 
 `--context-bytes` limits the serialized messages plus tool definitions sent per request (default 262144 bytes). This is a byte budget, not a model token count. Complete older turns are omitted as needed, while the full transcript remains on disk. The current turn and its tool results stay together. If the current turn alone exceeds the budget, the turn ends with an error; increase the budget or start a fresh session. This does not perform model-generated summarization.
 
-`--max-steps` sets the maximum number of model requests per turn (default 20). Reaching it reports an error while preserving the session for a follow-up prompt.
+Turns have no step limit by default. Optionally pass `--max-steps N` to cap the number of model requests per turn. Reaching an explicit cap reports an error while preserving the session for a follow-up prompt. Context budgets and request timeouts still apply.
 
 ## Coding evaluations
 

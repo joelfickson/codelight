@@ -98,8 +98,11 @@ struct Cli {
     resume: Option<PathBuf>,
     #[arg(long, default_value_t = DEFAULT_CONTEXT_BYTES, help = "Maximum serialized message and tool-definition bytes per request")]
     context_bytes: usize,
-    #[arg(long, default_value_t = 20, help = "Maximum model steps per turn")]
-    max_steps: usize,
+    #[arg(
+        long,
+        help = "Optional maximum model steps per turn; unlimited by default"
+    )]
+    max_steps: Option<usize>,
     #[arg(long, help = "Initialize the coding agent in a directory")]
     init: bool,
 }
@@ -422,7 +425,8 @@ fn to_request(code: KeyCode) -> Option<InputRequest> {
 
 #[cfg(test)]
 mod tests {
-    use super::model_alias;
+    use super::{Cli, model_alias};
+    use clap::Parser;
 
     #[test]
     fn aliases_models() {
@@ -430,6 +434,16 @@ mod tests {
         assert_eq!(model_alias("anthropic/claude-haiku-4.5"), "haiku 4.5");
         assert_eq!(model_alias("anthropic/claude-opus-4-6"), "opus 4.6");
         assert_eq!(model_alias("openai/gpt-5"), "gpt-5");
+    }
+    #[test]
+    fn step_limit_is_opt_in() {
+        assert_eq!(Cli::try_parse_from(["codelight"]).unwrap().max_steps, None);
+        assert_eq!(
+            Cli::try_parse_from(["codelight", "--max-steps", "50"])
+                .unwrap()
+                .max_steps,
+            Some(50)
+        );
     }
 }
 

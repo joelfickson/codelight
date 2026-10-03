@@ -73,3 +73,7 @@ The user authorized continuing with the existing work. Integrate against the lat
 ## ChatGPT validation status
 
 Implemented browser PKCE login, validated identity tokens, account selection, protected credential storage, serialized rotating-token refresh, logout, and a separate Responses backend. Response items persist in saved sessions and are excluded from Chat Completions requests. Workspace tests and strict Clippy pass; targeted tests cover signed identity validation, concurrent refresh, callback validation, account isolation, permissions, response continuation, incomplete streams, and CLI parsing. Live browser consent, account eligibility, server revocation, and live inference remain unverified. Credential storage currently supports Unix platforms only.
+
+## Unlimited turns by default
+
+Remove the default 20-step turn limit. Retain an optional explicit --max-steps cap, preserve verification reminders and existing error handling, and display the actual step count without a hardcoded maximum. Verify a turn exceeding 20 tool steps and explicit limit behavior.
