@@ -4,7 +4,7 @@ build:
 	cargo build
 
 run:
-	cargo run -p vc-cli
+	cargo run -p cli
 
 fmt:
 	cargo fmt
@@ -24,4 +24,4 @@ clean:
 	cargo clean
 
 spike:
-	cargo run -p vc-gateway --example spike
+	cargo run -p gateway --example spike

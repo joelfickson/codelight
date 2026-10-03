@@ -4,14 +4,14 @@ Codelight is a general-purpose terminal coding agent implemented as an eight-cra
 
 ## Invariants
 
-1. All inference goes through `vc-gateway`, using OpenAI-compatible Chat Completions with streaming and tool calls. Configure custom endpoints with `CODELIGHT_BASE_URL`, `CODELIGHT_API_KEY`, and `CODELIGHT_MODEL`. The existing Gateway remains the default for backward compatibility. Never forward `AI_GATEWAY_API_KEY` to a custom endpoint.
+1. All inference goes through `gateway`, using OpenAI-compatible Chat Completions with streaming and tool calls. Configure custom endpoints with `CODELIGHT_BASE_URL`, `CODELIGHT_API_KEY`, and `CODELIGHT_MODEL`. The existing Gateway remains the default for backward compatibility. Never forward `AI_GATEWAY_API_KEY` to a custom endpoint.
 2. Bundled prompts, tools, and skills must remain useful across stacks. There is no built-in deployment, live preview, or remote log integration. Do not advertise capabilities the agent does not have.
-3. Cross-crate contracts live in `vc-types`.
-4. `vc-agent` emits `AgentEvent`s without terminal knowledge; `vc-cli` owns rendering.
+3. Cross-crate contracts live in `types`.
+4. `agent` emits `AgentEvent`s without terminal knowledge; `cli` owns rendering.
 
 ## Architecture
 
-`vc-cli -> vc-agent -> { vc-gateway, vc-tools, vc-skills, vc-mcp, vc-context, vc-types }`.
+`cli -> agent -> { gateway, tools, skills, mcp, context, types }`.
 
 The current general-purpose scope is in `SPEC.md`. Historical platform-specific plans do not override it. The trust layer is described in `docs/superpowers/specs/2026-08-29-trust-layer-design.md`.
 

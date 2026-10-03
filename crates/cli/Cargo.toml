@@ -1,0 +1,22 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "codelight"
+path = "src/main.rs"
+
+[dependencies]
+types = { workspace = true }
+gateway = { workspace = true }
+tools = { workspace = true }
+agent = { workspace = true }
+skills = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+ratatui = { workspace = true }
+tui-input = { workspace = true }
+clap = { workspace = true }
+dotenvy = { workspace = true }
+async-trait = { workspace = true }

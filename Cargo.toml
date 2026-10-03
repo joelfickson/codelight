@@ -34,10 +34,10 @@ ratatui = "0.30"
 tui-input = { version = "0.14", default-features = false }
 
 
-vc-types   = { path = "crates/vc-types" }
-vc-gateway = { path = "crates/vc-gateway" }
-vc-tools   = { path = "crates/vc-tools" }
-vc-skills  = { path = "crates/vc-skills" }
-vc-mcp     = { path = "crates/vc-mcp" }
-vc-context = { path = "crates/vc-context" }
-vc-agent   = { path = "crates/vc-agent" }
+types   = { path = "crates/types" }
+gateway = { path = "crates/gateway" }
+tools   = { path = "crates/tools" }
+skills  = { path = "crates/skills" }
+mcp     = { path = "crates/mcp" }
+context = { path = "crates/context" }
+agent   = { path = "crates/agent" }

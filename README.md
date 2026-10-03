@@ -7,7 +7,7 @@ A general-purpose AI coding agent for your terminal. Explore, edit, debug, and v
 Use a current stable Rust toolchain:
 
 ```sh
-cargo install --path crates/vc-cli --locked
+cargo install --path crates/cli --locked
 ```
 
 Run `codelight` from the project you want to work on. `codelight --demo` shows an offline sample session without changing files or calling a model.
