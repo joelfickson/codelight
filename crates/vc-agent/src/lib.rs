@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::Value;
@@ -101,6 +101,19 @@ impl<B: ChatBackend> Agent<B> {
         user_message: &str,
         events: mpsc::Sender<AgentEvent>,
     ) -> Result<()> {
+        let result = self.run_turn(user_message, &events).await;
+        if let Err(error) = &result {
+            events.send(AgentEvent::Error(error.to_string())).await.ok();
+        }
+        events.send(AgentEvent::Done).await.ok();
+        result
+    }
+
+    async fn run_turn(
+        &mut self,
+        user_message: &str,
+        events: &mpsc::Sender<AgentEvent>,
+    ) -> Result<()> {
         self.history.push(Message::user(user_message));
 
         let mut mutated_since_check = false;
@@ -115,6 +128,7 @@ impl<B: ChatBackend> Agent<B> {
 
             let mut answer = String::new();
             let mut calls: Vec<ToolCall> = Vec::new();
+            let mut completed = false;
 
             while let Some(event) = stream.next().await {
                 match event {
@@ -136,12 +150,17 @@ impl<B: ChatBackend> Agent<B> {
                     }
                     StreamEvent::ToolCallEnd { .. } => {}
                     StreamEvent::Done { .. } => {
+                        completed = true;
                         events.send(AgentEvent::StepComplete).await.ok();
                     }
                     StreamEvent::Error(message) => {
-                        events.send(AgentEvent::Error(message)).await.ok();
+                        bail!("model stream failed: {message}");
                     }
                 }
+            }
+
+            if !completed {
+                bail!("model stream ended before completion; no pending tools were executed");
             }
 
             if calls.is_empty() {
@@ -153,7 +172,6 @@ impl<B: ChatBackend> Agent<B> {
                     ));
                     continue;
                 }
-                events.send(AgentEvent::Done).await.ok();
                 return Ok(());
             }
 
@@ -168,7 +186,7 @@ impl<B: ChatBackend> Agent<B> {
                     })
                     .await
                     .ok();
-                let (result, executed_ok) = self.execute(&call, &events).await;
+                let (result, executed_ok) = self.execute(&call, events).await;
                 if executed_ok {
                     match call.name.as_str() {
                         "edit_file" | "write_file" | "delete_file" | "move_file" => {
@@ -184,14 +202,7 @@ impl<B: ChatBackend> Agent<B> {
             }
         }
 
-        events
-            .send(AgentEvent::Error(
-                "reached max steps without a final answer".to_string(),
-            ))
-            .await
-            .ok();
-        events.send(AgentEvent::Done).await.ok();
-        Ok(())
+        bail!("reached max steps without a final answer")
     }
 
     async fn execute(&self, call: &ToolCall, events: &mpsc::Sender<AgentEvent>) -> (String, bool) {
@@ -620,5 +631,77 @@ mod tests {
         drain(rx).await;
         let seen = agent.backend.seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
+    }
+    struct FailOnceBackend {
+        failed: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl ChatBackend for FailOnceBackend {
+        async fn chat_stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[Value],
+        ) -> Result<BoxStream<'static, StreamEvent>> {
+            if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                bail!("connection unavailable");
+            }
+            Ok(Box::pin(futures::stream::iter(answer_turn("recovered"))))
+        }
+    }
+
+    #[tokio::test]
+    async fn request_failure_completes_and_next_turn_recovers() {
+        let mut agent = Agent::with_backend(
+            FailOnceBackend {
+                failed: std::sync::atomic::AtomicBool::new(false),
+            },
+            ToolRegistry::new(),
+            Arc::new(YesApprover),
+            empty_policy("recovery"),
+        );
+        let (tx, rx) = mpsc::channel(64);
+        assert!(agent.run("first", tx).await.is_err());
+        let events = drain(rx).await;
+        assert!(matches!(events.first(), Some(AgentEvent::Error(_))));
+        assert!(matches!(events.last(), Some(AgentEvent::Done)));
+        let (tx, rx) = mpsc::channel(64);
+        agent.run("try again", tx).await.unwrap();
+        let events = drain(rx).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::Token(text) if text == "recovered"))
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_stream_never_executes_pending_tools() {
+        for error in [false, true] {
+            let mut turn = tool_call_turn("run_command", r#"{"command":"pwd"}"#);
+            turn.pop();
+            if error {
+                turn.push(StreamEvent::Error("connection lost".into()));
+            }
+            let backend = StubBackend::new(vec![turn]);
+            let mut tools = ToolRegistry::new();
+            tools.register(Box::new(RunCommand));
+            let mut agent = Agent::with_backend(
+                backend,
+                tools,
+                Arc::new(YesApprover),
+                empty_policy("partial"),
+            );
+            let (tx, rx) = mpsc::channel(64);
+            assert!(agent.run("run", tx).await.is_err());
+            let events = drain(rx).await;
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::ToolStarted { .. }))
+            );
+            assert!(matches!(events.last(), Some(AgentEvent::Done)));
+            assert_eq!(agent.history.len(), 2);
+        }
     }
 }
