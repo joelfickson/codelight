@@ -9,10 +9,9 @@ use serde_json::Value;
 use vc_tools::Tool;
 
 const BUILTIN: &[&str] = &[
-    include_str!("skills/nextjs-app-router/SKILL.md"),
-    include_str!("skills/vercel-preview-deploys/SKILL.md"),
-    include_str!("skills/vercel-ai-sdk/SKILL.md"),
-    include_str!("skills/vercel-ship-check/SKILL.md"),
+    include_str!("skills/explore-codebase/SKILL.md"),
+    include_str!("skills/debug-and-test/SKILL.md"),
+    include_str!("skills/verify-changes/SKILL.md"),
 ];
 
 #[derive(Deserialize)]
@@ -119,10 +118,10 @@ impl SkillRegistry {
 fn skill_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(home) = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()) {
-        dirs.push(home.join(".vercelcode/skills"));
+        dirs.push(home.join(".codelight/skills"));
         dirs.push(home.join(".claude/skills"));
     }
-    dirs.push(PathBuf::from(".vercelcode/skills"));
+    dirs.push(PathBuf::from(".codelight/skills"));
     dirs.push(PathBuf::from(".claude/skills"));
     dirs
 }
@@ -256,7 +255,7 @@ impl Tool for SearchSkills {
     }
 
     fn description(&self) -> &str {
-        "Search the skills.sh registry for installable agent skills by keyword (runs `npx skills find`). Use it to discover skills - for example Vercel or Next.js skills - that you can then install with add_skill."
+        "Search the skills.sh registry for installable agent skills by keyword (runs `npx skills find`). Use it to discover skills for the project’s language and tools that you can then install with add_skill."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -264,7 +263,7 @@ impl Tool for SearchSkills {
             "type": "object",
             "properties": {
                 "query": { "type": "string", "description": "Keywords to search for" },
-                "owner": { "type": "string", "description": "Optional GitHub owner to restrict to, e.g. vercel-labs" }
+                "owner": { "type": "string", "description": "Optional GitHub owner to restrict to, e.g. owner" }
             },
             "required": ["query"]
         })
@@ -308,14 +307,14 @@ impl Tool for AddSkill {
     }
 
     fn description(&self) -> &str {
-        "Install a skill from the skills.sh registry into this project's .claude/skills directory (runs `npx skills add`), then return its instructions so you can use it immediately. Provide the source repo (e.g. vercel-labs/agent-skills) and the skill name. Installed skills persist and load automatically in future sessions."
+        "Install a skill from the skills.sh registry into this project's .claude/skills directory (runs `npx skills add`), then return its instructions so you can use it immediately. Provide the source repo (e.g. owner/agent-skills) and the skill name. Installed skills persist and load automatically in future sessions."
     }
 
     fn parameters_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "source": { "type": "string", "description": "The skill source repo, e.g. vercel-labs/agent-skills" },
+                "source": { "type": "string", "description": "The skill source repo, e.g. owner/agent-skills" },
                 "skill": { "type": "string", "description": "The skill name to install, e.g. frontend-design" }
             },
             "required": ["source", "skill"]
@@ -405,10 +404,10 @@ mod tests {
     #[test]
     fn loads_builtin_skills_and_advertises() {
         let registry = SkillRegistry::load();
-        assert!(registry.get("nextjs-app-router").is_some());
+        assert!(registry.get("explore-codebase").is_some());
         let ad = registry.advertise();
         assert!(ad.contains("Available skills"));
-        assert!(ad.contains("nextjs-app-router"));
+        assert!(ad.contains("explore-codebase"));
     }
 
     #[tokio::test]
@@ -416,7 +415,7 @@ mod tests {
         let registry = Arc::new(SkillRegistry::load());
         let tool = LoadSkill::new(registry);
         let out = tool
-            .execute(serde_json::json!({ "name": "nextjs-app-router" }))
+            .execute(serde_json::json!({ "name": "explore-codebase" }))
             .await
             .unwrap();
         assert!(out["instructions"].as_str().unwrap().len() > 20);

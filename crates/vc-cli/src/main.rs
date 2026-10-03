@@ -44,18 +44,15 @@ impl Approver for TuiApprover {
 }
 
 #[derive(Parser)]
-#[command(name = "codelight", about = "A Vercel-specialized AI coding agent")]
+#[command(name = "codelight", about = "A general-purpose AI coding agent")]
 struct Cli {
-    #[arg(long, help = "Validate the Gateway connection and exit")]
+    #[arg(long, help = "Validate the model connection and exit")]
     check: bool,
-    #[arg(
-        long,
-        help = "Seed a sample session to preview the UI without the Gateway"
-    )]
+    #[arg(long, help = "Show a sample session without connecting to a model")]
     demo: bool,
-    #[arg(long, help = "Gateway model id to use, e.g. anthropic/claude-opus-4-6")]
+    #[arg(long, help = "Model ID supported by the configured endpoint")]
     model: Option<String>,
-    #[arg(long, help = "List available Gateway models and exit")]
+    #[arg(long, help = "List models from the configured endpoint and exit")]
     list_models: bool,
     #[arg(long, help = "Skip all approval prompts and allow every tool call")]
     yolo: bool,
@@ -67,18 +64,18 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if cli.check {
-        return check().await;
+        return check(cli.model).await;
     }
 
     if cli.list_models {
-        return list_models_cli().await;
+        return list_models_cli(cli.model).await;
     }
 
     run(cli.demo, cli.model, cli.yolo).await
 }
 
-async fn list_models_cli() -> Result<()> {
-    let gateway = GatewayClient::from_env()?;
+async fn list_models_cli(model: Option<String>) -> Result<()> {
+    let gateway = GatewayClient::from_env_with_model(model)?;
     for id in gateway.list_models().await? {
         println!("{id}");
     }
@@ -106,30 +103,33 @@ fn model_alias(model: &str) -> String {
     short.to_string()
 }
 
-async fn check() -> Result<()> {
-    let gateway = GatewayClient::from_env()?;
+async fn check(model: Option<String>) -> Result<()> {
+    let gateway = GatewayClient::from_env_with_model(model)?;
     let (_reply, usage) = gateway
         .chat(&[Message::user("Reply with the single word: ok")])
         .await?;
     println!(
-        "gateway: ok ({} in / {} out tokens)",
+        "model connection: ok ({} in / {} out tokens)",
         usage.input_tokens, usage.output_tokens
     );
     Ok(())
 }
 
 async fn run(demo: bool, model_flag: Option<String>, yolo: bool) -> Result<()> {
-    let model = model_flag
+    let gateway = if demo {
+        None
+    } else {
+        Some(GatewayClient::from_env_with_model(model_flag.clone())?)
+    };
+    let model = gateway
+        .as_ref()
+        .map(|gateway| gateway.model().to_string())
+        .or(model_flag)
         .or_else(|| std::env::var("CODELIGHT_MODEL").ok())
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
     let mut app = App::new(project_name(), model_alias(&model));
     let (approvals_tx, mut approvals_rx) = mpsc::channel::<PendingApproval>(8);
-    let mut agent: Option<Agent> = if demo {
-        app.seed_demo();
-        None
-    } else {
-        let mut gateway = GatewayClient::from_env()?;
-        gateway.set_model(&model);
+    let mut agent: Option<Agent> = if let Some(gateway) = gateway {
         let skills = std::sync::Arc::new(SkillRegistry::load());
         let mut tools = ToolRegistry::new();
         tools.register(Box::new(ReadFile));
@@ -157,6 +157,9 @@ async fn run(demo: bool, model_flag: Option<String>, yolo: bool) -> Result<()> {
         let mut agent = Agent::new(gateway, tools, approver, policy);
         agent.set_skills(&skills.advertise());
         Some(agent)
+    } else {
+        app.seed_demo();
+        None
     };
 
     let (events_tx, mut events_rx) = mpsc::channel::<AgentEvent>(256);
@@ -234,7 +237,7 @@ async fn run(demo: bool, model_flag: Option<String>, yolo: bool) -> Result<()> {
                         if text == "/model" || text.starts_with("/model ") {
                             let arg = text.strip_prefix("/model").unwrap_or("").trim().to_string();
                             app.input.reset();
-                            if arg.contains('/') {
+                            if !arg.is_empty() {
                                 if let Some(active) = agent.as_mut() {
                                     active.set_model(&arg);
                                     app.set_model(model_alias(&arg));

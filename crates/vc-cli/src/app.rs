@@ -13,7 +13,6 @@ const ERR: Color = Color::Rgb(0xf0, 0x61, 0x6d);
 const FG: Color = Color::Rgb(0xe9, 0xe9, 0xee);
 const MUTED: Color = Color::Rgb(0x76, 0x7a, 0x86);
 const FAINT: Color = Color::Rgb(0x3c, 0x41, 0x4e);
-const URL: Color = Color::Rgb(0x93, 0xa7, 0xff);
 const CODE: Color = Color::Rgb(0xa9, 0xb6, 0xff);
 const LINE: Color = Color::Rgb(0x2b, 0x30, 0x3d);
 
@@ -64,18 +63,12 @@ impl Entry {
     }
 }
 
-pub enum Preview {
-    Idle,
-    Ready { url: String, secs: String },
-}
-
 pub struct App {
     pub input: Input,
     project: String,
     model: String,
     entries: Vec<Entry>,
     assistant: Option<usize>,
-    preview: Preview,
     steps: u32,
     pub thinking: bool,
     scroll: u16,
@@ -121,7 +114,6 @@ impl App {
             model,
             entries: Vec::new(),
             assistant: None,
-            preview: Preview::Idle,
             steps: 0,
             thinking: false,
             scroll: 0,
@@ -294,15 +286,11 @@ impl App {
     }
 
     pub fn seed_demo(&mut self) {
-        self.push_user("ship the dashboard spinner to a preview");
+        self.push_user("fix the config loader and add a regression test");
         self.entries.push(Entry {
             kind: Kind::Assistant,
-            text: "Added a route-level loading spinner, typechecked, and deployed a preview. The link is in the rail.".to_string(),
+            text: "Demo session: updated the config loader to use defaults when the file is missing and added a regression test. No files were changed or commands run.".to_string(),
         });
-        self.preview = Preview::Ready {
-            url: "my-app-git-spinner.vercel.app".to_string(),
-            secs: "8.2s".to_string(),
-        };
         self.steps = 4;
         self.thinking = false;
     }
@@ -490,10 +478,7 @@ impl App {
     }
 
     fn render_rail(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
-        let lines = match &self.preview {
-            Preview::Idle => self.rail_idle(),
-            Preview::Ready { url, secs } => self.rail_ready(url, secs),
-        };
+        let lines = self.rail_idle();
         let rail = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
             Block::default()
                 .borders(Borders::LEFT)
@@ -505,12 +490,9 @@ impl App {
 
     fn rail_idle(&self) -> Vec<Line<'static>> {
         vec![
-            label("preview"),
-            Line::from(Span::styled("○ no preview yet", Style::default().fg(MUTED))),
-            Line::from(Span::styled(
-                "deploy to see it live",
-                Style::default().fg(FAINT),
-            )),
+            label("workspace"),
+            Line::from(Span::styled("local project", Style::default().fg(MUTED))),
+            Line::from(Span::styled("ready to code", Style::default().fg(FAINT))),
             Line::default(),
             label("project"),
             Line::from(Span::styled(self.project.clone(), Style::default().fg(FG))),
@@ -523,33 +505,6 @@ impl App {
                 format!("step {}/20", self.steps),
                 Style::default().fg(MUTED),
             )),
-        ]
-    }
-
-    fn rail_ready(&self, url: &str, secs: &str) -> Vec<Line<'static>> {
-        vec![
-            Line::from(vec![
-                Span::styled("DEPLOYMENT", Style::default().fg(MUTED)),
-                Span::styled(format!("  ready · {secs}"), Style::default().fg(OK)),
-            ]),
-            step_done("install"),
-            step_done("compile"),
-            step_done("static"),
-            step_done("ready"),
-            Line::default(),
-            label("preview"),
-            Line::from(Span::styled("● live", Style::default().fg(OK))),
-            Line::from(Span::styled(
-                url.to_string(),
-                Style::default().fg(URL).add_modifier(Modifier::UNDERLINED),
-            )),
-            Line::from(Span::styled(
-                "open · copy · logs",
-                Style::default().fg(ACCENT),
-            )),
-            Line::default(),
-            label("model"),
-            Line::from(Span::styled(self.model.clone(), Style::default().fg(MUTED))),
         ]
     }
 
@@ -640,13 +595,6 @@ fn label(text: &str) -> Line<'static> {
         text.to_uppercase(),
         Style::default().fg(MUTED),
     ))
-}
-
-fn step_done(text: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("▸ {text} "), Style::default().fg(MUTED)),
-        Span::styled("✓", Style::default().fg(OK)),
-    ])
 }
 
 fn render_markdown(text: &str) -> Vec<Line<'static>> {
@@ -828,12 +776,12 @@ mod tests {
     }
 
     #[test]
-    fn idle_shows_header_and_empty_preview() {
+    fn idle_shows_header_and_local_workspace() {
         let mut app = app();
         let text = draw(&mut app);
         assert!(text.contains("codelight"));
         assert!(text.contains("my-app"));
-        assert!(text.contains("no preview yet"));
+        assert!(text.contains("local project"));
     }
 
     #[test]
@@ -904,13 +852,13 @@ mod tests {
     }
 
     #[test]
-    fn ready_preview_shows_url_and_actions() {
+    fn demo_shows_local_coding_session() {
         let mut app = app();
         app.seed_demo();
         let text = draw(&mut app);
-        assert!(text.contains("DEPLOYMENT"));
-        assert!(text.contains("my-app-git-spinner.vercel.app"));
-        assert!(text.contains("open · copy · logs"));
+        assert!(text.contains("config loader"));
+        assert!(text.contains("local project"));
+        assert!(!text.contains("DEPLOYMENT"));
     }
 
     #[test]

@@ -539,7 +539,7 @@ impl Tool for SearchDocs {
         "search_docs"
     }
     fn description(&self) -> &str {
-        "Search the bundled offline documentation corpus (Next.js App Router, the Vercel platform, and the Vercel AI SDK) by keyword using BM25 ranking and return the most relevant snippets. Use this to recall framework and platform concepts from a fixed built-in corpus; do NOT use it to read a file from disk (use read_file for that)."
+        "Search the bundled general coding workflow guidance (repository exploration, debugging, verification, Git, configuration, and dependencies) by keyword using BM25 ranking and return the most relevant snippets. This is not a current framework or API reference; do NOT use it to read a file from disk (use read_file for that)."
     }
     fn parameters_schema(&self) -> Value {
         serde_json::json!({
@@ -981,16 +981,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_docs_finds_streaming_loading() {
+    async fn search_docs_finds_regression_testing() {
         let tool = SearchDocs;
         let out = tool
-            .execute(serde_json::json!({ "query": "loading state streaming suspense" }))
+            .execute(serde_json::json!({ "query": "debugging regression tests" }))
             .await
             .unwrap();
         let results = out["results"].as_array().unwrap();
         assert!(!results.is_empty());
         let top = results[0]["text"].as_str().unwrap().to_lowercase();
-        assert!(top.contains("loading") || top.contains("suspense"));
+        assert!(top.contains("regression test"));
     }
 
     #[tokio::test]

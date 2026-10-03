@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
 
     agent
         .run(
-            "I'm about to deploy my Next.js app to Vercel. Verify it's ready to ship.",
+            "Inspect this project and run its relevant verification checks. Report any failures.",
             tx,
         )
         .await?;
