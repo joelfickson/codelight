@@ -60,7 +60,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --locked -p vc-cli --bin codelight --target ${{ matrix.target }}
+        run: cargo build --release --locked -p cli --bin codelight --target ${{ matrix.target }}
 
       - name: Package
         shell: bash

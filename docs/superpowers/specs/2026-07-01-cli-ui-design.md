@@ -59,8 +59,8 @@ surfaces the build error and the agent can act on it directly.
 
 ## Deferred (v0.2+)
 
-- Rail **Building**/**Failed** states — need the deploy tool + build-log stream (`vc-mcp`).
-- Real project context (`vc-context`: framework + versions in header/rail).
+- Rail **Building**/**Failed** states — need the deploy tool + build-log stream (`mcp`).
+- Real project context (`context`: framework + versions in header/rail).
 - Cost/budget meter — needs `CostTracker`.
 - Changed-files / diff section; rail focus-toggle to collapse for pure chat.
 
