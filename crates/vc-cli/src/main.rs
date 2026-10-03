@@ -56,6 +56,8 @@ struct Cli {
     list_models: bool,
     #[arg(long, help = "Skip all approval prompts and allow every tool call")]
     yolo: bool,
+    #[arg(long, help = "Initialize the coding agent in a directory")]
+    init: bool,
 }
 
 #[tokio::main]
@@ -71,7 +73,36 @@ async fn main() -> Result<()> {
         return list_models_cli(cli.model).await;
     }
 
+    if cli.init {
+        return initialize_project();
+    }
+
     run(cli.demo, cli.model, cli.yolo).await
+}
+
+fn initialize_project() -> Result<()> {
+    let directory = std::env::current_dir()?;
+    let mut found = false;
+
+    for name in ["AGENTS.md", "CLAUDE.md"] {
+        let path = directory.join(name);
+
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                println!("Found {}", path.display());
+                found = true;
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    if !found {
+        println!("No AGENTS.md or CLAUDE.md found in {}", directory.display());
+    }
+
+    Ok(())
 }
 
 async fn list_models_cli(model: Option<String>) -> Result<()> {
