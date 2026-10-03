@@ -15,3 +15,7 @@ No UI layout changes, code comments, or edits to the primary checkout. No automa
 ## Verification
 
 Each PR runs cargo fmt, cargo clippy --workspace --all-targets, and cargo test --workspace. Network protocol tests use local servers. Benchmark fixtures run at small scale before expanding. Live model quality is unverified unless a live evaluation actually runs.
+
+## Implemented validation
+
+The stack implements failure recovery, atomic local session checkpoints, whole-turn byte-bounded context, and the `vc-eval` runner. Workspace tests and Clippy pass. The three scripted coding fixtures pass independent acceptance checks, and a false-success regression fails evaluation as intended. Live-model evaluations have not been run. Context pruning intentionally does not summarize earlier work or guarantee a provider token limit.

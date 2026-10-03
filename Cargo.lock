@@ -2687,6 +2687,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "vc-eval"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "vc-agent",
+ "vc-context",
+ "vc-gateway",
+ "vc-tools",
+ "vc-types",
+]
+
+[[package]]
 name = "vc-gateway"
 version = "0.1.0"
 dependencies = [
