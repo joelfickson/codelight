@@ -3,6 +3,23 @@
 version = 4
 
 [[package]]
+name = "agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "context",
+ "dotenvy",
+ "futures",
+ "gateway",
+ "serde_json",
+ "skills",
+ "tokio",
+ "tools",
+ "types",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -274,6 +291,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "cli"
+version = "0.1.0"
+dependencies = [
+ "agent",
+ "anyhow",
+ "async-trait",
+ "clap",
+ "context",
+ "directories",
+ "dotenvy",
+ "gateway",
+ "ratatui",
+ "skills",
+ "tokio",
+ "tools",
+ "tui-input",
+ "types",
+ "uuid",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -291,6 +329,17 @@ dependencies = [
  "rustversion",
  "ryu",
  "static_assertions",
+]
+
+[[package]]
+name = "context"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "types",
+ "uuid",
 ]
 
 [[package]]
@@ -739,6 +788,23 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "gateway"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "dotenvy",
+ "eventsource-stream",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "types",
 ]
 
 [[package]]
@@ -1237,6 +1303,10 @@ dependencies = [
  "nix",
  "winapi",
 ]
+
+[[package]]
+name = "mcp"
+version = "0.1.0"
 
 [[package]]
 name = "memchr"
@@ -2095,6 +2165,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
+name = "skills"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "directories",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tools",
+ "types",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2470,6 +2555,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
+name = "tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "toml_edit",
+ "types",
+]
+
+[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2555,6 +2653,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ucd-trie"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2635,112 +2741,6 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "vc-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "dotenvy",
- "futures",
- "serde_json",
- "tokio",
- "vc-context",
- "vc-gateway",
- "vc-skills",
- "vc-tools",
- "vc-types",
-]
-
-[[package]]
-name = "vc-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "clap",
- "directories",
- "dotenvy",
- "ratatui",
- "tokio",
- "tui-input",
- "uuid",
- "vc-agent",
- "vc-context",
- "vc-gateway",
- "vc-skills",
- "vc-tools",
- "vc-types",
-]
-
-[[package]]
-name = "vc-context"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "uuid",
- "vc-types",
-]
-
-[[package]]
-name = "vc-gateway"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "dotenvy",
- "eventsource-stream",
- "futures",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "vc-types",
-]
-
-[[package]]
-name = "vc-mcp"
-version = "0.1.0"
-
-[[package]]
-name = "vc-skills"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "directories",
- "serde",
- "serde_json",
- "serde_yaml",
- "tokio",
- "vc-tools",
- "vc-types",
-]
-
-[[package]]
-name = "vc-tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "reqwest",
- "serde_json",
- "tokio",
- "toml_edit",
- "vc-types",
-]
-
-[[package]]
-name = "vc-types"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]

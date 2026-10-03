@@ -27,7 +27,7 @@ file introduced here is its future home).
 
 ## 1. Permission policy
 
-New module in `vc-tools`: `PermissionPolicy`.
+New module in `tools`: `PermissionPolicy`.
 
 - Holds two pattern lists: a built-in safe list and user patterns loaded from
   `.codelight.toml` in the current working directory.
@@ -62,7 +62,7 @@ New module in `vc-tools`: `PermissionPolicy`.
 
 ## 2. Approval seam
 
-New shapes in `vc-types`:
+New shapes in `types`:
 
 ```rust
 pub struct ApprovalRequest {
@@ -84,7 +84,7 @@ or `delete <path>`, or `overwrite <path>`. `suggested_pattern` is what
 means the always-allow option is not offered (deletes and overwrites are
 always per-call).
 
-New trait in `vc-agent`:
+New trait in `agent`:
 
 ```rust
 #[async_trait]
@@ -96,7 +96,7 @@ pub trait Approver: Send + Sync {
 - `Agent` gains an `Arc<dyn Approver>` field, passed at construction.
 - `AgentEvent` cannot carry a reply channel (it derives `Clone`), so approval
   deliberately bypasses the event bus. The renderer seam is preserved because
-  `Approver` is a trait: `vc-agent` still has zero terminal knowledge.
+  `Approver` is a trait: `agent` still has zero terminal knowledge.
 - In `Agent::execute`, before running a tool: ask the tool for an
   `approval_request` (see section 3). If `Some`, call the approver.
   - `AllowOnce`: execute.
@@ -104,12 +104,12 @@ pub trait Approver: Send + Sync {
   - `Deny`: do not execute; return a tool-result JSON error
     `{"error": "the user declined to allow this action"}` so the model can
     adjust course.
-- `YesApprover` (approves everything) ships in `vc-agent` for `--yolo` and for
+- `YesApprover` (approves everything) ships in `agent` for `--yolo` and for
   `--check` / headless use.
 
 ## 3. Gated tools
 
-The `Tool` trait in `vc-tools` gains a default method:
+The `Tool` trait in `tools` gains a default method:
 
 ```rust
 fn approval_request(&self, args: &Value, policy: &PermissionPolicy) -> Option<ApprovalRequest> {
@@ -169,7 +169,7 @@ wrapping so the closing marker always survives.
 
 ## 6. CLI
 
-- `vc-cli` implements `Approver` as `TuiApprover`: sends the request to the
+- `cli` implements `Approver` as `TuiApprover`: sends the request to the
   render loop over an mpsc channel, draws a modal (reusing the `/model`
   picker's overlay machinery) with the action text and the available choices,
   and resolves a `oneshot` with the decision. Keyboard: `y` allow once,
@@ -181,10 +181,10 @@ wrapping so the closing marker always survives.
 
 ## 7. Gateway trait (testability)
 
-To test the loop, `vc-agent` stops depending on the concrete `GatewayClient`
+To test the loop, `agent` stops depending on the concrete `GatewayClient`
 for streaming: a small trait (`ChatStream` or similar) with the
 `chat_stream(&history, &definitions)` signature, implemented by
-`GatewayClient` in `vc-gateway`, and by a scripted stub in `vc-agent` tests.
+`GatewayClient` in `gateway`, and by a scripted stub in `agent` tests.
 Model-management methods stay on the concrete client; only the streaming call
 goes behind the trait. This is intentionally minimal, not a full gateway
 abstraction.
