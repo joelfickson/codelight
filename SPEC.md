@@ -43,6 +43,37 @@ Each PR runs cargo fmt, cargo clippy --workspace --all-targets, and cargo test -
 
 The stack implements failure recovery, atomic local session checkpoints, whole-turn byte-bounded context, and the `eval` runner. Workspace tests and Clippy pass. The three scripted coding fixtures pass independent acceptance checks, and a false-success regression fails evaluation as intended. Live-model evaluations have not been run. Context pruning intentionally does not summarize earlier work or guarantee a provider token limit.
 
+# ChatGPT sign-in integration
+
+## Requested extension
+
+Add Sign in with ChatGPT alongside existing API-key connections. Use the official open-source ChatGPT plan-usage flow and the public Responses API. Keep the current terminal layout.
+
+## Implementation plan
+
+1. Add authentication support under the gateway crate: persistent installation host ID, separate account registrations, browser authorization with fresh state, nonce, and S256 PKCE, and a loopback callback at /auth/callback.
+2. Retain the issued client ID before code exchange. Validate ID-token signature, issuer, audience, expiry, nonce, and returning-account identity before activating credentials. Require granted plan-usage scope before inference.
+3. Store credentials atomically outside repositories with owner-only permissions. Serialize refreshes across processes. Preserve registration identity through logout, attempt remote session revocation, and clearly report unconfirmed revocation.
+4. Add login, logout, and account selection commands. Keep provider selection explicit so logging in does not silently reroute an existing API-key session.
+5. Add a Responses backend with account-specific model discovery, streaming text and function calls, tool-result submission, and retained response items needed for subsequent turns. Require response.completed; reject failed, incomplete, malformed, and interrupted streams before executing pending tools.
+6. Route ChatGPT OAuth credentials only to the official OpenAI endpoints. Retain the current Chat Completions backend for API-key connections.
+7. Test callback validation, registration reuse, account isolation, token refresh, storage permissions, logout, model discovery, tool-call round trips, and interrupted streams against local fixtures. Run workspace tests, Clippy, and formatting, then reinstall the CLI. Live authentication requires the user to complete browser consent.
+
+## Current integration dependency
+
+The user authorized continuing with the existing work. Integrate against the latest session-recovery implementation and preserve its behavior.
+
+## Official references
+
+- https://developers.openai.com/siwc/token-sharing-open-source/sign-in
+- https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions
+- https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference
+- https://developers.openai.com/siwc/token-sharing-open-source/token-reference
+
+## ChatGPT validation status
+
+Implemented browser PKCE login, validated identity tokens, account selection, protected credential storage, serialized rotating-token refresh, logout, and a separate Responses backend. Response items persist in saved sessions and are excluded from Chat Completions requests. Workspace tests and strict Clippy pass; targeted tests cover signed identity validation, concurrent refresh, callback validation, account isolation, permissions, response continuation, incomplete streams, and CLI parsing. Live browser consent, account eligibility, server revocation, and live inference remain unverified. Credential storage currently supports Unix platforms only.
+
 ## Unlimited turns by default
 
 Remove the default 20-step turn limit. Retain an optional explicit --max-steps cap, preserve verification reminders and existing error handling, and display the actual step count without a hardcoded maximum. Verify a turn exceeding 20 tool steps and explicit limit behavior.

@@ -100,3 +100,34 @@ cargo run -p eval -- --live
 ```
 
 Configure `CODELIGHT_BASE_URL`, `CODELIGHT_MODEL`, and optionally `CODELIGHT_API_KEY` for a custom endpoint, or `AI_GATEWAY_API_KEY` for the default Gateway; the evaluation runner does not load `.env` files. Live runs make paid model requests and compile and execute generated Rust on the host. The harness restricts tool file writes to fixture source files and shell calls to the fixture test command, but it is not an execution sandbox. Use a disposable environment for untrusted models. No live-model quality claim follows from passing scripted tests.
+
+## Sign in with ChatGPT
+
+On macOS and Linux, connect a ChatGPT account using browser sign-in:
+
+```sh
+codelight login
+codelight --provider chatgpt --list-models
+codelight --provider chatgpt --check
+codelight --provider chatgpt
+```
+
+Approve Codelight's access and ChatGPT plan usage in the browser. Availability and usage limits depend on your account and OpenAI's preview eligibility. Review or revoke access in [ChatGPT usage settings](https://chatgpt.com/settings/usage).
+
+ChatGPT mode discovers the models available to the selected account. It uses the first visible model unless you pass `--model <model-id>`. The provider is explicit: logging in does not change existing API-key connections. ChatGPT mode ignores `CODELIGHT_API_KEY`, `CODELIGHT_BASE_URL`, and `CODELIGHT_MODEL`; OAuth credentials only go to official OpenAI endpoints.
+
+Manage accounts with:
+
+```sh
+codelight accounts
+codelight login --new
+codelight accounts --select <account-id>
+codelight login --account <account-id>
+codelight logout
+```
+
+`logout --account <account-id>` disconnects a specific account. Logout clears local credentials and attempts server revocation, while retaining the client registration for future sign-ins. If revocation cannot be confirmed, the CLI reports it. A running session keeps its original account even when another process selects a different account.
+
+Credentials are stored outside the repository in Codelight's platform configuration directory, under `chatgpt/accounts.json`, with owner-only permissions. On macOS this is `~/Library/Application Support/codelight/chatgpt/`; on Linux it is `$XDG_CONFIG_HOME/codelight/chatgpt/` or `~/.config/codelight/chatgpt/`. Token refreshes are serialized across processes. Windows credential storage is not implemented yet.
+
+The ChatGPT backend uses streamed Responses requests with `store: false`. Saved sessions retain response items, including opaque reasoning context, for tool-call continuation. Failed or incomplete responses never execute pending tools. Session files contain conversation content and should remain private.

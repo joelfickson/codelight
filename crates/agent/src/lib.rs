@@ -183,6 +183,7 @@ impl<B: ChatBackend> Agent<B> {
             let mut answer = String::new();
             let mut calls: Vec<ToolCall> = Vec::new();
             let mut completed = false;
+            let mut response_items = Vec::new();
 
             while let Some(event) = stream.next().await {
                 match event {
@@ -202,6 +203,7 @@ impl<B: ChatBackend> Agent<B> {
                             call.arguments.push_str(&chunk);
                         }
                     }
+                    StreamEvent::ResponseItems(items) => response_items = items,
                     StreamEvent::ToolCallEnd { .. } => {}
                     StreamEvent::Done { .. } => {
                         completed = true;
@@ -218,7 +220,9 @@ impl<B: ChatBackend> Agent<B> {
             }
 
             if calls.is_empty() {
-                self.history.push(Message::assistant(answer));
+                let mut message = Message::assistant(answer);
+                message.response_items = response_items;
+                self.history.push(message);
                 if mutated_since_check && !nudged && self.max_steps.is_none_or(|limit| step < limit)
                 {
                     nudged = true;
@@ -230,8 +234,10 @@ impl<B: ChatBackend> Agent<B> {
                 return Ok(());
             }
 
-            self.history
-                .push(Message::assistant_tool_calls(calls.clone()));
+            let mut message = Message::assistant_tool_calls(calls.clone());
+            message.content = answer;
+            message.response_items = response_items;
+            self.history.push(message);
             self.checkpoint()?;
 
             for call in calls {

@@ -16,6 +16,10 @@ serde_yaml = "0.9"
 schemars = "1"
 
 anyhow = "1"
+base64 = "0.22"
+sha2 = "0.10"
+jsonwebtoken = "9"
+fs2 = "0.4"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -35,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
             StreamEvent::ToolCallArgs { id, chunk } => println!("[args]  {id}: {chunk}"),
             StreamEvent::ToolCallEnd { id } => println!("[end]   {id}"),
             StreamEvent::Token(text) => print!("{text}"),
+            StreamEvent::ResponseItems(_) => {}
             StreamEvent::Done { usage } => {
                 println!(
                     "\n[done] {} in / {} out",
